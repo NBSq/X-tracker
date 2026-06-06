@@ -20,6 +20,13 @@ class AnalysisResult:
     summary: str
 
 
+@dataclass(frozen=True)
+class SpikeInsight:
+    explanation: str
+    action: str
+    confidence: int
+
+
 class OpenAIAnalyzer:
     def __init__(self, api_key: str, model: str, known_narratives: list[str]) -> None:
         self.api_key = api_key
@@ -117,6 +124,82 @@ class OpenAIAnalyzer:
             raise ValueError("OpenAI response did not contain output text")
         return "".join(chunks)
 
+    def explain_spike(
+        self,
+        kind: str,
+        name: str,
+        hype_score: float,
+        top_posts: list[str],
+        related_tokens: list[str],
+        related_narratives: list[str],
+    ) -> SpikeInsight:
+        payload = {
+            "model": self.model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Explain crypto hype spikes concisely. Return strict JSON with "
+                        "explanation, action, and confidence. action must be watch, ignore, "
+                        "or research. confidence must be an integer from 1 to 10. Do not "
+                        "give financial advice."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Signal: {kind} {name}\nHype score: {hype_score:.2f}\n"
+                        f"Related tokens: {', '.join(related_tokens)}\n"
+                        f"Related narratives: {', '.join(related_narratives)}\n"
+                        f"Top posts:\n" + "\n".join(top_posts)
+                    ),
+                },
+            ],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "hype_spike_explanation",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "explanation": {"type": "string"},
+                            "action": {
+                                "type": "string",
+                                "enum": ["watch", "ignore", "research"],
+                            },
+                            "confidence": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 10,
+                            },
+                        },
+                        "required": ["explanation", "action", "confidence"],
+                    },
+                }
+            },
+        }
+        response = requests.post(
+            OPENAI_RESPONSES_URL,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=60,
+        )
+        response.raise_for_status()
+        raw = response.json().get("output_text")
+        if raw is None:
+            raw = self._extract_output_text(response.json())
+        parsed = json.loads(raw)
+        return SpikeInsight(
+            explanation=str(parsed["explanation"]),
+            action=str(parsed["action"]),
+            confidence=max(1, min(10, int(parsed["confidence"]))),
+        )
+
 
 class LocalAnalyzer:
     TOKEN_ALIASES = {
@@ -174,3 +257,26 @@ class LocalAnalyzer:
             importance=importance,
             summary=text.strip()[:180],
         )
+
+    def explain_spike(
+        self,
+        kind: str,
+        name: str,
+        hype_score: float,
+        top_posts: list[str],
+        related_tokens: list[str],
+        related_narratives: list[str],
+    ) -> SpikeInsight:
+        confidence = max(1, min(10, round(hype_score / 5)))
+        if confidence >= 7:
+            action = "research"
+        elif confidence >= 5:
+            action = "watch"
+        else:
+            action = "ignore"
+        explanation = (
+            f"{name} is appearing across {len(top_posts)} high-importance posts, "
+            f"pushing its {kind} hype score to {hype_score:.2f}. "
+            "The clustered attention may signal a developing market narrative."
+        )
+        return SpikeInsight(explanation=explanation, action=action, confidence=confidence)

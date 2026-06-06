@@ -17,6 +17,7 @@ hype = mentions_count * average_importance
 - Sends Telegram alerts when hype crosses the configured threshold
 - Runs continuously every 15 minutes by default
 - Includes a fully offline local MVP mode with fake posts and deterministic analysis
+- Enriches spike alerts with top posts, related signals, confidence, and a watchlist action
 
 ## Project Structure
 
@@ -56,6 +57,8 @@ TELEGRAM_CHAT_ID=your_telegram_chat_id
 ```
 
 Telegram credentials are optional. When omitted, spike alerts are printed to the console only.
+
+Live-mode spike explanations are generated with OpenAI. Local mode produces a deterministic offline explanation so the complete alert workflow can be tested without API credentials.
 
 Optional settings:
 
@@ -123,6 +126,18 @@ TELEGRAM_CHAT_ID=your_telegram_chat_id
 ```
 
 Local mode is a one-shot run. Posts and alerts are de-duplicated in SQLite, so use a fresh `DATABASE_PATH` or remove the test database when you want to replay every alert.
+
+Reset all previous analyses and alerts before replaying the local MVP:
+
+```bash
+python -m app.main --mode local --reset-db
+```
+
+Print a summary report and optionally send it to Telegram:
+
+```bash
+python -m app.main --mode local --summary
+```
 
 Run the Telegram payload tests without sending a real message:
 

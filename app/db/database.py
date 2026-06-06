@@ -44,6 +44,11 @@ class Database:
         )
         self.connection.commit()
 
+    def reset(self) -> None:
+        self.connection.execute("DELETE FROM alerts")
+        self.connection.execute("DELETE FROM analyzed_posts")
+        self.connection.commit()
+
     def has_post(self, post_id: str) -> bool:
         row = self.connection.execute(
             "SELECT 1 FROM analyzed_posts WHERE post_id = ?",
@@ -97,6 +102,48 @@ class Database:
             GROUP BY kind, name
             """,
             (f"-{lookback_minutes} minutes", f"-{lookback_minutes} minutes"),
+        ).fetchall()
+
+    def get_signal_posts(
+        self,
+        kind: str,
+        name: str,
+        lookback_minutes: int = 60,
+        limit: int = 3,
+    ) -> list[sqlite3.Row]:
+        if kind not in {"token", "narrative"}:
+            raise ValueError(f"Unsupported signal kind: {kind}")
+        json_column = "tokens_json" if kind == "token" else "narratives_json"
+        return self.connection.execute(
+            f"""
+            SELECT username, text, tokens_json, narratives_json, importance
+            FROM analyzed_posts
+            WHERE analyzed_at >= datetime('now', ?)
+              AND EXISTS (
+                  SELECT 1
+                  FROM json_each({json_column})
+                  WHERE value = ? COLLATE NOCASE
+              )
+            ORDER BY importance DESC, analyzed_at DESC
+            LIMIT ?
+            """,
+            (f"-{lookback_minutes} minutes", name, limit),
+        ).fetchall()
+
+    def get_most_important_posts(
+        self,
+        lookback_minutes: int = 60,
+        limit: int = 3,
+    ) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT username, text, importance
+            FROM analyzed_posts
+            WHERE analyzed_at >= datetime('now', ?)
+            ORDER BY importance DESC, analyzed_at DESC
+            LIMIT ?
+            """,
+            (f"-{lookback_minutes} minutes", limit),
         ).fetchall()
 
     def alert_recently_sent(self, kind: str, name: str, lookback_minutes: int = 60) -> bool:
