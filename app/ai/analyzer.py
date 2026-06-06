@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -115,3 +116,61 @@ class OpenAIAnalyzer:
         if not chunks:
             raise ValueError("OpenAI response did not contain output text")
         return "".join(chunks)
+
+
+class LocalAnalyzer:
+    TOKEN_ALIASES = {
+        "BTC": ("btc", "bitcoin"),
+        "ETH": ("eth", "ethereum"),
+        "SOL": ("sol", "solana"),
+        "LINK": ("link", "chainlink"),
+        "ONDO": ("ondo",),
+        "RNDR": ("rndr", "render"),
+        "TAO": ("tao", "bittensor"),
+        "DOGE": ("doge", "dogecoin"),
+        "PEPE": ("pepe",),
+        "ARB": ("arb", "arbitrum"),
+    }
+    BULLISH_WORDS = {
+        "bullish", "breakout", "buy", "growth", "rally", "strong", "surge",
+        "upside", "adoption", "accumulating", "outperform",
+    }
+    BEARISH_WORDS = {
+        "bearish", "breakdown", "dump", "risk", "sell", "weak", "downside",
+        "overheated", "avoid", "liquidation",
+    }
+
+    def __init__(self, known_narratives: list[str]) -> None:
+        self.known_narratives = known_narratives
+
+    def analyze_post(self, text: str) -> AnalysisResult:
+        normalized = text.lower()
+        words = set(re.findall(r"[a-z0-9]+", normalized))
+        tokens = [
+            token
+            for token, aliases in self.TOKEN_ALIASES.items()
+            if any(alias.lower() in words for alias in aliases)
+        ]
+        narratives = [
+            narrative
+            for narrative in self.known_narratives
+            if narrative.lower() in normalized
+        ]
+
+        bullish_hits = len(words & self.BULLISH_WORDS)
+        bearish_hits = len(words & self.BEARISH_WORDS)
+        if bullish_hits > bearish_hits:
+            sentiment = "bullish"
+        elif bearish_hits > bullish_hits:
+            sentiment = "bearish"
+        else:
+            sentiment = "neutral"
+
+        importance = min(10, 4 + bullish_hits + bearish_hits + len(tokens) + len(narratives))
+        return AnalysisResult(
+            tokens=tokens,
+            narratives=narratives,
+            sentiment=sentiment,
+            importance=importance,
+            summary=text.strip()[:180],
+        )

@@ -16,6 +16,7 @@ hype = mentions_count * average_importance
 
 - Sends Telegram alerts when hype crosses the configured threshold
 - Runs continuously every 15 minutes by default
+- Includes a fully offline local MVP mode with fake posts and deterministic analysis
 
 ## Project Structure
 
@@ -31,6 +32,7 @@ app/
 data/
   accounts.json
   narratives.json
+  sample_posts.json
 ```
 
 ## Setup
@@ -44,7 +46,7 @@ pip install -r requirements.txt
 copy .env.example .env
 ```
 
-Edit `.env`:
+Edit `.env` before using live mode:
 
 ```text
 X_BEARER_TOKEN=your_x_bearer_token
@@ -52,6 +54,8 @@ OPENAI_API_KEY=your_openai_api_key
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 TELEGRAM_CHAT_ID=your_telegram_chat_id
 ```
+
+Telegram credentials are optional. When omitted, spike alerts are printed to the console only.
 
 Optional settings:
 
@@ -83,6 +87,8 @@ Update `data/narratives.json` with narratives you care about:
 
 ## Run
 
+Live mode requires X and OpenAI credentials and loops every 15 minutes:
+
 ```bash
 python -m app.main
 ```
@@ -92,6 +98,36 @@ The app loops forever. To test faster, set:
 ```text
 FETCH_INTERVAL_SECONDS=60
 HYPE_ALERT_THRESHOLD=5
+```
+
+## Local MVP test
+
+Local mode requires no X API or OpenAI API credentials. It reads 30 fake crypto posts from `data/sample_posts.json`, analyzes them with the built-in deterministic analyzer, stores results in SQLite, calculates hype scores, and prints spike alerts to the console.
+
+```bash
+copy .env.example .env
+python -m app.main --mode local
+```
+
+Disable Telegram explicitly while keeping console alerts:
+
+```bash
+python -m app.main --mode local --no-telegram
+```
+
+To optionally send the same alerts to Telegram, set both values in `.env`:
+
+```text
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+TELEGRAM_CHAT_ID=your_telegram_chat_id
+```
+
+Local mode is a one-shot run. Posts and alerts are de-duplicated in SQLite, so use a fresh `DATABASE_PATH` or remove the test database when you want to replay every alert.
+
+Run the Telegram payload tests without sending a real message:
+
+```bash
+python -m unittest tests.test_telegram
 ```
 
 ## Notes
