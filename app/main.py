@@ -21,6 +21,7 @@ from app.config import Config, load_config
 from app.db.database import Database
 from app.scoring.hype_score import build_hype_signal
 from app.sources.local_client import load_sample_posts
+from app.sources.rss_client import RSSClient, load_rss_feeds
 from app.sources.x_client import XClient, XPost
 
 
@@ -51,9 +52,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Track crypto narratives from X posts")
     parser.add_argument(
         "--mode",
-        choices=("live", "local"),
+        choices=("live", "local", "rss"),
         default="live",
-        help="Use X/OpenAI APIs or run the offline sample-post MVP",
+        help="Use X, RSS, or run the offline sample-post MVP",
     )
     parser.add_argument(
         "--no-telegram",
@@ -267,6 +268,11 @@ def validate_live_config(config: Config) -> None:
         raise RuntimeError("OPENAI_API_KEY is required in live mode")
 
 
+def validate_rss_config(config: Config) -> None:
+    if not config.openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY is required in RSS mode")
+
+
 def run_live_once(config: Config, db: Database, no_telegram: bool = False) -> None:
     accounts = [name.lstrip("@") for name in load_json_list(config.accounts_path, "accounts")]
     narratives = load_json_list(config.narratives_path, "narratives")
@@ -283,6 +289,29 @@ def run_live(config: Config, db: Database, no_telegram: bool = False) -> None:
             run_live_once(config, db, no_telegram)
         except Exception:
             logger.exception("Live run failed")
+
+        elapsed = time.time() - started_at
+        sleep_seconds = max(0, config.fetch_interval_seconds - elapsed)
+        logger.info("Sleeping for %.0f seconds", sleep_seconds)
+        time.sleep(sleep_seconds)
+
+
+def run_rss_once(config: Config, db: Database, no_telegram: bool = False) -> None:
+    feeds = load_rss_feeds(config.rss_feeds_path)
+    narratives = load_json_list(config.narratives_path, "narratives")
+    posts = RSSClient().fetch_recent_posts(feeds, config.rss_articles_per_feed)
+    analyzer = OpenAIAnalyzer(config.openai_api_key, config.openai_model, narratives)
+    process_posts(posts, analyzer, config, db, build_telegram(config, no_telegram))
+
+
+def run_rss(config: Config, db: Database, no_telegram: bool = False) -> None:
+    validate_rss_config(config)
+    while True:
+        started_at = time.time()
+        try:
+            run_rss_once(config, db, no_telegram)
+        except Exception:
+            logger.exception("RSS run failed")
 
         elapsed = time.time() - started_at
         sleep_seconds = max(0, config.fetch_interval_seconds - elapsed)
@@ -308,6 +337,8 @@ def main() -> None:
     try:
         if args.mode == "local":
             run_local(config, db, args.no_telegram, args.summary)
+        elif args.mode == "rss":
+            run_rss(config, db, args.no_telegram)
         else:
             run_live(config, db, args.no_telegram)
     except KeyboardInterrupt:

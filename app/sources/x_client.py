@@ -17,6 +17,10 @@ class XPost:
     created_at: str | None
     url: str
 
+    @property
+    def author(self) -> str:
+        return self.username
+
 
 class XClient:
     def __init__(self, bearer_token: str) -> None:

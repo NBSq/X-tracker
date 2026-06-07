@@ -26,6 +26,7 @@ app/
   main.py
   config.py
   sources/x_client.py
+  sources/rss_client.py
   ai/analyzer.py
   db/database.py
   alerts/telegram.py
@@ -34,6 +35,7 @@ data/
   accounts.json
   narratives.json
   sample_posts.json
+  rss_feeds.json
 ```
 
 ## Setup
@@ -68,6 +70,7 @@ OPENAI_MODEL=gpt-4o-mini
 FETCH_INTERVAL_SECONDS=900
 HYPE_ALERT_THRESHOLD=25
 POSTS_PER_ACCOUNT=10
+RSS_ARTICLES_PER_FEED=10
 ```
 
 ## Configure Sources
@@ -95,6 +98,16 @@ Live mode requires X and OpenAI credentials and loops every 15 minutes:
 ```bash
 python -m app.main
 ```
+
+RSS mode reads the public feeds configured in `data/rss_feeds.json`, analyzes new articles with OpenAI, and reuses the same SQLite, hype scoring, and Telegram alert pipeline:
+
+```bash
+python -m app.main --mode rss
+```
+
+RSS mode requires `OPENAI_API_KEY` but does not require `X_BEARER_TOKEN`. Individual feed failures are logged and do not stop other feeds from being processed.
+
+RSS article authors are mapped to the shared post record's `username` field for compatibility with existing storage and alerts, and are also available through its `author` property.
 
 The app loops forever. To test faster, set:
 

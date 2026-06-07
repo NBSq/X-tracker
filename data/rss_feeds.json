@@ -1,0 +1,16 @@
+{
+  "RSS_FEEDS": [
+    {
+      "name": "CoinDesk",
+      "url": "https://www.coindesk.com/arc/outboundfeeds/rss/"
+    },
+    {
+      "name": "Decrypt",
+      "url": "https://decrypt.co/feed"
+    },
+    {
+      "name": "Cointelegraph Bitcoin",
+      "url": "https://cointelegraph.com/rss/tag/bitcoin"
+    }
+  ]
+}

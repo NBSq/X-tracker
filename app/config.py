@@ -19,9 +19,11 @@ class Config:
     fetch_interval_seconds: int
     hype_alert_threshold: float
     posts_per_account: int
+    rss_articles_per_feed: int
     accounts_path: Path
     narratives_path: Path
     sample_posts_path: Path
+    rss_feeds_path: Path
 
 
 def _get_int_env(name: str, default: str) -> int:
@@ -51,7 +53,9 @@ def load_config() -> Config:
         fetch_interval_seconds=_get_int_env("FETCH_INTERVAL_SECONDS", "900"),
         hype_alert_threshold=_get_float_env("HYPE_ALERT_THRESHOLD", "25"),
         posts_per_account=_get_int_env("POSTS_PER_ACCOUNT", "10"),
+        rss_articles_per_feed=_get_int_env("RSS_ARTICLES_PER_FEED", "10"),
         accounts_path=BASE_DIR / "data" / "accounts.json",
         narratives_path=BASE_DIR / "data" / "narratives.json",
         sample_posts_path=BASE_DIR / "data" / "sample_posts.json",
+        rss_feeds_path=BASE_DIR / "data" / "rss_feeds.json",
     )
