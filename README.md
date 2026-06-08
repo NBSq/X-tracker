@@ -109,6 +109,14 @@ RSS mode requires `OPENAI_API_KEY` but does not require `X_BEARER_TOKEN`. Indivi
 
 RSS article authors are mapped to the shared post record's `username` field for compatibility with existing storage and alerts, and are also available through its `author` property.
 
+Run RSS mode without an OpenAI key or OpenAI API calls:
+
+```bash
+python -m app.main --mode rss --mock-ai
+```
+
+`--mock-ai` uses deterministic keyword rules to detect common tokens and configured narratives, then generates sentiment, importance, spike explanations, confidence, and watchlist actions locally. It reuses the same SQLite, alert, and summary pipeline.
+
 The app loops forever. To test faster, set:
 
 ```text

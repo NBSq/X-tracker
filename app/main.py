@@ -71,6 +71,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print a narrative summary after processing and optionally send it to Telegram",
     )
+    parser.add_argument(
+        "--mock-ai",
+        action="store_true",
+        help="Use deterministic keyword analysis instead of the OpenAI API",
+    )
     return parser.parse_args()
 
 
@@ -261,32 +266,55 @@ def run_local(
         print_and_send_summary(db, telegram)
 
 
-def validate_live_config(config: Config) -> None:
+def build_analyzer(
+    config: Config,
+    narratives: list[str],
+    mock_ai: bool = False,
+) -> Analyzer:
+    if mock_ai:
+        logger.info("Mock AI enabled; OpenAI API will not be used")
+        return LocalAnalyzer(narratives)
+    if not config.openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY is required unless --mock-ai is enabled")
+    return OpenAIAnalyzer(config.openai_api_key, config.openai_model, narratives)
+
+
+def validate_live_config(config: Config, mock_ai: bool = False) -> None:
     if not config.x_bearer_token:
         raise RuntimeError("X_BEARER_TOKEN is required in live mode")
-    if not config.openai_api_key:
+    if not mock_ai and not config.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY is required in live mode")
 
 
-def validate_rss_config(config: Config) -> None:
-    if not config.openai_api_key:
+def validate_rss_config(config: Config, mock_ai: bool = False) -> None:
+    if not mock_ai and not config.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY is required in RSS mode")
 
 
-def run_live_once(config: Config, db: Database, no_telegram: bool = False) -> None:
+def run_live_once(
+    config: Config,
+    db: Database,
+    no_telegram: bool = False,
+    mock_ai: bool = False,
+) -> None:
     accounts = [name.lstrip("@") for name in load_json_list(config.accounts_path, "accounts")]
     narratives = load_json_list(config.narratives_path, "narratives")
     posts = XClient(config.x_bearer_token).fetch_recent_posts(accounts, config.posts_per_account)
-    analyzer = OpenAIAnalyzer(config.openai_api_key, config.openai_model, narratives)
+    analyzer = build_analyzer(config, narratives, mock_ai)
     process_posts(posts, analyzer, config, db, build_telegram(config, no_telegram))
 
 
-def run_live(config: Config, db: Database, no_telegram: bool = False) -> None:
-    validate_live_config(config)
+def run_live(
+    config: Config,
+    db: Database,
+    no_telegram: bool = False,
+    mock_ai: bool = False,
+) -> None:
+    validate_live_config(config, mock_ai)
     while True:
         started_at = time.time()
         try:
-            run_live_once(config, db, no_telegram)
+            run_live_once(config, db, no_telegram, mock_ai)
         except Exception:
             logger.exception("Live run failed")
 
@@ -296,20 +324,30 @@ def run_live(config: Config, db: Database, no_telegram: bool = False) -> None:
         time.sleep(sleep_seconds)
 
 
-def run_rss_once(config: Config, db: Database, no_telegram: bool = False) -> None:
+def run_rss_once(
+    config: Config,
+    db: Database,
+    no_telegram: bool = False,
+    mock_ai: bool = False,
+) -> None:
     feeds = load_rss_feeds(config.rss_feeds_path)
     narratives = load_json_list(config.narratives_path, "narratives")
     posts = RSSClient().fetch_recent_posts(feeds, config.rss_articles_per_feed)
-    analyzer = OpenAIAnalyzer(config.openai_api_key, config.openai_model, narratives)
+    analyzer = build_analyzer(config, narratives, mock_ai)
     process_posts(posts, analyzer, config, db, build_telegram(config, no_telegram))
 
 
-def run_rss(config: Config, db: Database, no_telegram: bool = False) -> None:
-    validate_rss_config(config)
+def run_rss(
+    config: Config,
+    db: Database,
+    no_telegram: bool = False,
+    mock_ai: bool = False,
+) -> None:
+    validate_rss_config(config, mock_ai)
     while True:
         started_at = time.time()
         try:
-            run_rss_once(config, db, no_telegram)
+            run_rss_once(config, db, no_telegram, mock_ai)
         except Exception:
             logger.exception("RSS run failed")
 
@@ -338,9 +376,9 @@ def main() -> None:
         if args.mode == "local":
             run_local(config, db, args.no_telegram, args.summary)
         elif args.mode == "rss":
-            run_rss(config, db, args.no_telegram)
+            run_rss(config, db, args.no_telegram, args.mock_ai)
         else:
-            run_live(config, db, args.no_telegram)
+            run_live(config, db, args.no_telegram, args.mock_ai)
     except KeyboardInterrupt:
         logger.info("Stopped")
     except Exception:

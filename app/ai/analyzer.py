@@ -213,6 +213,26 @@ class LocalAnalyzer:
         "DOGE": ("doge", "dogecoin"),
         "PEPE": ("pepe",),
         "ARB": ("arb", "arbitrum"),
+        "XRP": ("xrp", "ripple"),
+        "ADA": ("ada", "cardano"),
+        "AVAX": ("avax", "avalanche"),
+        "BNB": ("bnb",),
+        "SUI": ("sui",),
+        "JUP": ("jup", "jupiter"),
+        "AAVE": ("aave",),
+        "UNI": ("uni", "uniswap"),
+    }
+    NARRATIVE_ALIASES = {
+        "ai agents": ("ai agents", "artificial intelligence", "crypto ai"),
+        "bitcoin l2": ("bitcoin l2", "bitcoin layer 2", "btc layer 2"),
+        "depin": ("depin", "decentralized physical infrastructure"),
+        "ethereum scaling": ("ethereum scaling", "ethereum layer 2", "eth scaling"),
+        "memecoins": ("memecoins", "memecoin", "meme coin"),
+        "modular blockchains": ("modular blockchains", "modular blockchain"),
+        "real world assets": ("real world assets", "rwa", "tokenization"),
+        "restaking": ("restaking", "re-staking"),
+        "solana ecosystem": ("solana ecosystem", "solana"),
+        "zero knowledge": ("zero knowledge", "zk proof", "zk rollup"),
     }
     BULLISH_WORDS = {
         "bullish", "breakout", "buy", "growth", "rally", "strong", "surge",
@@ -234,11 +254,14 @@ class LocalAnalyzer:
             for token, aliases in self.TOKEN_ALIASES.items()
             if any(alias.lower() in words for alias in aliases)
         ]
-        narratives = [
-            narrative
-            for narrative in self.known_narratives
-            if narrative.lower() in normalized
-        ]
+        narratives = []
+        for narrative in self.known_narratives:
+            aliases = self.NARRATIVE_ALIASES.get(
+                narrative.lower(),
+                (narrative.lower(),),
+            )
+            if any(alias in normalized for alias in aliases):
+                narratives.append(narrative)
 
         bullish_hits = len(words & self.BULLISH_WORDS)
         bearish_hits = len(words & self.BEARISH_WORDS)
