@@ -37,6 +37,25 @@ class NarrativeSummary:
     important_posts: list[AlertPost]
 
 
+@dataclass(frozen=True)
+class NarrativeTrend:
+    name: str
+    score: float
+
+
+@dataclass(frozen=True)
+class NarrativeGrowth:
+    name: str
+    growth_percent: float
+
+
+@dataclass(frozen=True)
+class TrendReport:
+    top_24h: list[NarrativeTrend]
+    top_7d: list[NarrativeTrend]
+    fastest_growing: list[NarrativeGrowth]
+
+
 class TelegramAlerter:
     def __init__(self, bot_token: str, chat_id: str) -> None:
         self.bot_token = bot_token
@@ -60,6 +79,18 @@ class TelegramAlerter:
             json={
                 "chat_id": self.chat_id,
                 "text": format_telegram_summary(summary),
+                "parse_mode": "HTML",
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+
+    def send_trend_report(self, report: TrendReport) -> None:
+        response = requests.post(
+            f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
+            json={
+                "chat_id": self.chat_id,
+                "text": format_telegram_trend_report(report),
                 "parse_mode": "HTML",
             },
             timeout=30,
@@ -148,4 +179,46 @@ def format_telegram_summary(summary: NarrativeSummary) -> str:
         f"<b>Top Tokens:</b>\n{tokens or 'None'}\n\n"
         f"<b>Top Narratives:</b>\n{narratives or 'None'}\n\n"
         f"<b>Most important posts:</b>\n{posts or 'None'}"
+    )
+
+
+def format_trend_report(report: TrendReport) -> str:
+    top_24h = "\n".join(
+        f"{index}. {item.name} — {item.score:.2f}"
+        for index, item in enumerate(report.top_24h, start=1)
+    )
+    top_7d = "\n".join(
+        f"{index}. {item.name} — {item.score:.2f}"
+        for index, item in enumerate(report.top_7d, start=1)
+    )
+    growing = "\n".join(
+        f"{item.name} {item.growth_percent:+.0f}%"
+        for item in report.fastest_growing
+    )
+    return (
+        "📈 Crypto Narrative Trend Report\n\n"
+        f"Top narratives last 24h\n{top_24h or 'None'}\n\n"
+        f"Top narratives last 7d\n{top_7d or 'None'}\n\n"
+        f"Fastest growing narratives\n{growing or 'None'}"
+    )
+
+
+def format_telegram_trend_report(report: TrendReport) -> str:
+    top_24h = "\n".join(
+        f"{index}. {escape(item.name)} — {item.score:.2f}"
+        for index, item in enumerate(report.top_24h, start=1)
+    )
+    top_7d = "\n".join(
+        f"{index}. {escape(item.name)} — {item.score:.2f}"
+        for index, item in enumerate(report.top_7d, start=1)
+    )
+    growing = "\n".join(
+        f"{escape(item.name)} {item.growth_percent:+.0f}%"
+        for item in report.fastest_growing
+    )
+    return (
+        "📈 <b>Crypto Narrative Trend Report</b>\n\n"
+        f"<b>Top narratives last 24h</b>\n{top_24h or 'None'}\n\n"
+        f"<b>Top narratives last 7d</b>\n{top_7d or 'None'}\n\n"
+        f"<b>Fastest growing narratives</b>\n{growing or 'None'}"
     )

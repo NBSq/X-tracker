@@ -6,12 +6,17 @@ from app.alerts.telegram import (
     AlertPost,
     HypeAlert,
     NarrativeSummary,
+    NarrativeGrowth,
+    NarrativeTrend,
     SummaryItem,
     TelegramAlerter,
+    TrendReport,
     format_hype_alert,
     format_summary,
     format_telegram_hype_alert,
     format_telegram_summary,
+    format_telegram_trend_report,
+    format_trend_report,
 )
 from app.scoring.hype_score import HypeSignal
 
@@ -52,6 +57,14 @@ class TelegramAlertTests(unittest.TestCase):
             important_posts=[
                 AlertPost(username="alice", text="SOL is strong <today>"),
                 AlertPost(username="bob", text="AI agents are accelerating"),
+            ],
+        )
+        self.trend_report = TrendReport(
+            top_24h=[NarrativeTrend(name="AI <Agents>", score=42.0)],
+            top_7d=[NarrativeTrend(name="RWA", score=15.0)],
+            fastest_growing=[
+                NarrativeGrowth(name="AI <Agents>", growth_percent=42.0),
+                NarrativeGrowth(name="Memecoins", growth_percent=-8.0),
             ],
         )
 
@@ -100,6 +113,24 @@ class TelegramAlertTests(unittest.TestCase):
         request = post.call_args
         self.assertEqual(request.kwargs["json"]["parse_mode"], "HTML")
         self.assertIn("Crypto Narrative Summary", request.kwargs["json"]["text"])
+
+    def test_trend_report_formatters(self) -> None:
+        plain = format_trend_report(self.trend_report)
+        html = format_telegram_trend_report(self.trend_report)
+
+        self.assertIn("AI <Agents> +42%", plain)
+        self.assertIn("Memecoins -8%", plain)
+        self.assertIn("AI &lt;Agents&gt;", html)
+
+    @patch("app.alerts.telegram.requests.post")
+    def test_trend_report_sender_uses_html_parse_mode(self, post) -> None:
+        post.return_value.raise_for_status.return_value = None
+
+        TelegramAlerter("test-token", "test-chat").send_trend_report(self.trend_report)
+
+        request = post.call_args
+        self.assertEqual(request.kwargs["json"]["parse_mode"], "HTML")
+        self.assertIn("Crypto Narrative Trend Report", request.kwargs["json"]["text"])
 
 
 if __name__ == "__main__":

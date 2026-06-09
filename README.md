@@ -160,6 +160,14 @@ Print a summary report and optionally send it to Telegram:
 python -m app.main --mode local --summary
 ```
 
+Print narrative history trends and optionally send them to Telegram:
+
+```bash
+python -m app.main --trend-report
+```
+
+Each processing run stores the current detected narrative hype scores in SQLite. The trend report shows average narrative scores for the last 24 hours and 7 days, plus growth over the last 24 hours compared with the preceding 24 hours.
+
 Run the Telegram payload tests without sending a real message:
 
 ```bash

@@ -12,10 +12,14 @@ from app.alerts.telegram import (
     AlertPost,
     HypeAlert,
     NarrativeSummary,
+    NarrativeGrowth,
+    NarrativeTrend,
     SummaryItem,
     TelegramAlerter,
+    TrendReport,
     format_hype_alert,
     format_summary,
+    format_trend_report,
 )
 from app.config import Config, load_config
 from app.db.database import Database
@@ -76,6 +80,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use deterministic keyword analysis instead of the OpenAI API",
     )
+    parser.add_argument(
+        "--trend-report",
+        action="store_true",
+        help="Print narrative trends from stored history and optionally send to Telegram",
+    )
     return parser.parse_args()
 
 
@@ -113,6 +122,7 @@ def process_posts(
             logger.exception("Could not analyze post %s", post.id)
 
     logger.info("Saved %d new analyses", analyzed_count)
+    db.save_narrative_score_history(db.get_recent_signal_stats())
     evaluate_hype(config, db, telegram, analyzer)
 
 
@@ -246,6 +256,43 @@ def print_and_send_summary(db: Database, telegram: TelegramAlerter | None) -> No
             logger.exception("Telegram summary failed")
 
 
+def build_trend_report(db: Database) -> TrendReport:
+    top_24h = [
+        NarrativeTrend(name=str(row["narrative"]), score=float(row["score"]))
+        for row in db.get_top_narrative_history(24)
+    ]
+    top_7d = [
+        NarrativeTrend(name=str(row["narrative"]), score=float(row["score"]))
+        for row in db.get_top_narrative_history(24 * 7)
+    ]
+    fastest_growing = [
+        NarrativeGrowth(
+            name=str(row["narrative"]),
+            growth_percent=float(row["growth_percent"]),
+        )
+        for row in db.get_fastest_growing_narratives()
+    ]
+    return TrendReport(
+        top_24h=top_24h,
+        top_7d=top_7d,
+        fastest_growing=fastest_growing,
+    )
+
+
+def print_and_send_trend_report(
+    db: Database,
+    telegram: TelegramAlerter | None,
+) -> None:
+    report = build_trend_report(db)
+    logger.info("\n%s", format_trend_report(report))
+    if telegram:
+        try:
+            telegram.send_trend_report(report)
+            logger.info("Telegram trend report sent")
+        except Exception:
+            logger.exception("Telegram trend report failed")
+
+
 def run_local(
     config: Config,
     db: Database,
@@ -373,7 +420,9 @@ def main() -> None:
         raise SystemExit(1)
 
     try:
-        if args.mode == "local":
+        if args.trend_report:
+            print_and_send_trend_report(db, build_telegram(config, args.no_telegram))
+        elif args.mode == "local":
             run_local(config, db, args.no_telegram, args.summary)
         elif args.mode == "rss":
             run_rss(config, db, args.no_telegram, args.mock_ai)

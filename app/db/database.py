@@ -40,6 +40,18 @@ class Database:
                 average_importance REAL NOT NULL,
                 sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS narrative_score_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                narrative TEXT NOT NULL,
+                hype_score REAL NOT NULL,
+                mentions_count INTEGER NOT NULL,
+                average_importance REAL NOT NULL,
+                recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_narrative_history_recorded_at
+            ON narrative_score_history(recorded_at);
             """
         )
         self.connection.commit()
@@ -47,6 +59,7 @@ class Database:
     def reset(self) -> None:
         self.connection.execute("DELETE FROM alerts")
         self.connection.execute("DELETE FROM analyzed_posts")
+        self.connection.execute("DELETE FROM narrative_score_history")
         self.connection.commit()
 
     def has_post(self, post_id: str) -> bool:
@@ -144,6 +157,95 @@ class Database:
             LIMIT ?
             """,
             (f"-{lookback_minutes} minutes", limit),
+        ).fetchall()
+
+    def save_narrative_score_history(self, rows: list[sqlite3.Row]) -> None:
+        values = []
+        for row in rows:
+            if str(row["kind"]) != "narrative":
+                continue
+            mentions_count = int(row["mentions_count"])
+            average_importance = float(row["average_importance"])
+            values.append(
+                (
+                    str(row["name"]),
+                    mentions_count * average_importance,
+                    mentions_count,
+                    average_importance,
+                )
+            )
+        if values:
+            self.connection.executemany(
+                """
+                INSERT INTO narrative_score_history (
+                    narrative, hype_score, mentions_count, average_importance
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                values,
+            )
+            self.connection.commit()
+
+    def get_top_narrative_history(
+        self,
+        lookback_hours: int,
+        limit: int = 5,
+    ) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT narrative, AVG(hype_score) AS score
+            FROM narrative_score_history
+            WHERE recorded_at >= datetime('now', ?)
+            GROUP BY narrative
+            ORDER BY score DESC
+            LIMIT ?
+            """,
+            (f"-{lookback_hours} hours", limit),
+        ).fetchall()
+
+    def get_fastest_growing_narratives(self, limit: int = 5) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            WITH raw_scores AS (
+                SELECT
+                    narrative,
+                    AVG(CASE
+                        WHEN recorded_at >= datetime('now', '-24 hours')
+                        THEN hype_score
+                    END) AS current_score,
+                    AVG(CASE
+                        WHEN recorded_at >= datetime('now', '-48 hours')
+                         AND recorded_at < datetime('now', '-24 hours')
+                        THEN hype_score
+                    END) AS previous_score
+                FROM narrative_score_history
+                WHERE recorded_at >= datetime('now', '-48 hours')
+                GROUP BY narrative
+            ),
+            scores AS (
+                SELECT
+                    narrative,
+                    COALESCE(current_score, 0.0) AS current_score,
+                    COALESCE(previous_score, 0.0) AS previous_score
+                FROM raw_scores
+            )
+            SELECT
+                narrative,
+                current_score,
+                previous_score,
+                CASE
+                    WHEN previous_score > 0
+                    THEN ((current_score - previous_score) / previous_score) * 100.0
+                    WHEN current_score > 0
+                    THEN 100.0
+                    ELSE 0.0
+                END AS growth_percent
+            FROM scores
+            WHERE current_score > 0 OR previous_score > 0
+            ORDER BY growth_percent DESC, current_score DESC
+            LIMIT ?
+            """,
+            (limit,),
         ).fetchall()
 
     def alert_recently_sent(self, kind: str, name: str, lookback_minutes: int = 60) -> bool:
