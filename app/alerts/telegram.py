@@ -56,6 +56,15 @@ class TrendReport:
     fastest_growing: list[NarrativeGrowth]
 
 
+@dataclass(frozen=True)
+class DailyDigest:
+    top_tokens: list[SummaryItem]
+    top_narratives: list[SummaryItem]
+    fastest_growing: NarrativeGrowth | None
+    important_posts: list[AlertPost]
+    final_summary: str
+
+
 class TelegramAlerter:
     def __init__(self, bot_token: str, chat_id: str) -> None:
         self.bot_token = bot_token
@@ -91,6 +100,18 @@ class TelegramAlerter:
             json={
                 "chat_id": self.chat_id,
                 "text": format_telegram_trend_report(report),
+                "parse_mode": "HTML",
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+
+    def send_daily_digest(self, digest: DailyDigest) -> None:
+        response = requests.post(
+            f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
+            json={
+                "chat_id": self.chat_id,
+                "text": format_telegram_daily_digest(digest),
                 "parse_mode": "HTML",
             },
             timeout=30,
@@ -221,4 +242,61 @@ def format_telegram_trend_report(report: TrendReport) -> str:
         f"<b>Top narratives last 24h</b>\n{top_24h or 'None'}\n\n"
         f"<b>Top narratives last 7d</b>\n{top_7d or 'None'}\n\n"
         f"<b>Fastest growing narratives</b>\n{growing or 'None'}"
+    )
+
+
+def format_daily_digest(digest: DailyDigest) -> str:
+    tokens = "\n".join(
+        f"{index}. {item.name} — hype score {item.hype_score:.2f}"
+        for index, item in enumerate(digest.top_tokens, start=1)
+    )
+    narratives = "\n".join(
+        f"{index}. {item.name} — hype score {item.hype_score:.2f}"
+        for index, item in enumerate(digest.top_narratives, start=1)
+    )
+    growing = (
+        f"{digest.fastest_growing.name} {digest.fastest_growing.growth_percent:+.0f}%"
+        if digest.fastest_growing
+        else "None"
+    )
+    posts = "\n".join(
+        f"{index}. @{post.username}: {post.text}"
+        for index, post in enumerate(digest.important_posts, start=1)
+    )
+    return (
+        "🗞 Crypto Daily Digest\n\n"
+        f"Top 5 tokens last 24h\n{tokens or 'None'}\n\n"
+        f"Top 5 narratives last 24h\n{narratives or 'None'}\n\n"
+        f"Fastest growing narrative\n{growing}\n\n"
+        f"Top articles/posts\n{posts or 'None'}\n\n"
+        f"Summary\n{digest.final_summary}"
+    )
+
+
+def format_telegram_daily_digest(digest: DailyDigest) -> str:
+    tokens = "\n".join(
+        f"{index}. {escape(item.name)} — hype score {item.hype_score:.2f}"
+        for index, item in enumerate(digest.top_tokens, start=1)
+    )
+    narratives = "\n".join(
+        f"{index}. {escape(item.name)} — hype score {item.hype_score:.2f}"
+        for index, item in enumerate(digest.top_narratives, start=1)
+    )
+    growing = (
+        f"{escape(digest.fastest_growing.name)} "
+        f"{digest.fastest_growing.growth_percent:+.0f}%"
+        if digest.fastest_growing
+        else "None"
+    )
+    posts = "\n".join(
+        f"{index}. @{escape(post.username)}: {escape(post.text[:300])}"
+        for index, post in enumerate(digest.important_posts, start=1)
+    )
+    return (
+        "🗞 <b>Crypto Daily Digest</b>\n\n"
+        f"<b>Top 5 tokens last 24h</b>\n{tokens or 'None'}\n\n"
+        f"<b>Top 5 narratives last 24h</b>\n{narratives or 'None'}\n\n"
+        f"<b>Fastest growing narrative</b>\n{growing}\n\n"
+        f"<b>Top articles/posts</b>\n{posts or 'None'}\n\n"
+        f"<b>Summary</b>\n{escape(digest.final_summary)}"
     )

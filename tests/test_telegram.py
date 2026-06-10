@@ -4,6 +4,7 @@ from unittest.mock import patch
 from app.ai.analyzer import SpikeInsight
 from app.alerts.telegram import (
     AlertPost,
+    DailyDigest,
     HypeAlert,
     NarrativeSummary,
     NarrativeGrowth,
@@ -12,8 +13,10 @@ from app.alerts.telegram import (
     TelegramAlerter,
     TrendReport,
     format_hype_alert,
+    format_daily_digest,
     format_summary,
     format_telegram_hype_alert,
+    format_telegram_daily_digest,
     format_telegram_summary,
     format_telegram_trend_report,
     format_trend_report,
@@ -66,6 +69,13 @@ class TelegramAlertTests(unittest.TestCase):
                 NarrativeGrowth(name="AI <Agents>", growth_percent=42.0),
                 NarrativeGrowth(name="Memecoins", growth_percent=-8.0),
             ],
+        )
+        self.daily_digest = DailyDigest(
+            top_tokens=[SummaryItem(name="SOL <script>", hype_score=36.0)],
+            top_narratives=[SummaryItem(name="AI Agents", hype_score=34.0)],
+            fastest_growing=NarrativeGrowth(name="RWA", growth_percent=15.0),
+            important_posts=[AlertPost(username="alice", text="SOL is strong <today>")],
+            final_summary="SOL and AI <Agents> led attention.",
         )
 
     def test_html_formatter_escapes_dynamic_content(self) -> None:
@@ -131,6 +141,25 @@ class TelegramAlertTests(unittest.TestCase):
         request = post.call_args
         self.assertEqual(request.kwargs["json"]["parse_mode"], "HTML")
         self.assertIn("Crypto Narrative Trend Report", request.kwargs["json"]["text"])
+
+    def test_daily_digest_formatters(self) -> None:
+        plain = format_daily_digest(self.daily_digest)
+        html = format_telegram_daily_digest(self.daily_digest)
+
+        self.assertIn("Top 5 tokens last 24h", plain)
+        self.assertIn("RWA +15%", plain)
+        self.assertIn("SOL &lt;script&gt;", html)
+        self.assertIn("AI &lt;Agents&gt;", html)
+
+    @patch("app.alerts.telegram.requests.post")
+    def test_daily_digest_sender_uses_html_parse_mode(self, post) -> None:
+        post.return_value.raise_for_status.return_value = None
+
+        TelegramAlerter("test-token", "test-chat").send_daily_digest(self.daily_digest)
+
+        request = post.call_args
+        self.assertEqual(request.kwargs["json"]["parse_mode"], "HTML")
+        self.assertIn("Crypto Daily Digest", request.kwargs["json"]["text"])
 
 
 if __name__ == "__main__":

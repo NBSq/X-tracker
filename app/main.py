@@ -10,6 +10,7 @@ from typing import Protocol
 from app.ai.analyzer import AnalysisResult, LocalAnalyzer, OpenAIAnalyzer, SpikeInsight
 from app.alerts.telegram import (
     AlertPost,
+    DailyDigest,
     HypeAlert,
     NarrativeSummary,
     NarrativeGrowth,
@@ -18,6 +19,7 @@ from app.alerts.telegram import (
     TelegramAlerter,
     TrendReport,
     format_hype_alert,
+    format_daily_digest,
     format_summary,
     format_trend_report,
 )
@@ -84,6 +86,11 @@ def parse_args() -> argparse.Namespace:
         "--trend-report",
         action="store_true",
         help="Print narrative trends from stored history and optionally send to Telegram",
+    )
+    parser.add_argument(
+        "--daily-digest",
+        action="store_true",
+        help="Print a 24-hour digest and optionally send it to Telegram",
     )
     return parser.parse_args()
 
@@ -293,6 +300,67 @@ def print_and_send_trend_report(
             logger.exception("Telegram trend report failed")
 
 
+def build_daily_digest(db: Database) -> DailyDigest:
+    token_items = []
+    narrative_items = []
+    for row in db.get_signal_stats_for_hours(24):
+        signal = build_hype_signal(row)
+        item = SummaryItem(name=signal.name, hype_score=signal.hype_score)
+        if signal.kind == "token":
+            token_items.append(item)
+        else:
+            narrative_items.append(item)
+    token_items.sort(key=lambda item: item.hype_score, reverse=True)
+    narrative_items.sort(key=lambda item: item.hype_score, reverse=True)
+
+    growth_rows = db.get_fastest_growing_narratives(limit=1)
+    fastest_growing = None
+    if growth_rows:
+        fastest_growing = NarrativeGrowth(
+            name=str(growth_rows[0]["narrative"]),
+            growth_percent=float(growth_rows[0]["growth_percent"]),
+        )
+    important_posts = [
+        AlertPost(username=str(row["username"]), text=str(row["text"]))
+        for row in db.get_most_important_posts(lookback_minutes=24 * 60, limit=3)
+    ]
+
+    top_token = token_items[0].name if token_items else "no token"
+    top_narrative = narrative_items[0].name if narrative_items else "no narrative"
+    if fastest_growing:
+        growth_text = (
+            f"{fastest_growing.name} is the fastest-growing narrative "
+            f"at {fastest_growing.growth_percent:+.0f}%."
+        )
+    else:
+        growth_text = "There is not enough history to identify narrative growth."
+    final_summary = (
+        f"{top_token} led token attention while {top_narrative} led narratives. "
+        f"{growth_text}"
+    )
+    return DailyDigest(
+        top_tokens=token_items[:5],
+        top_narratives=narrative_items[:5],
+        fastest_growing=fastest_growing,
+        important_posts=important_posts,
+        final_summary=final_summary,
+    )
+
+
+def print_and_send_daily_digest(
+    db: Database,
+    telegram: TelegramAlerter | None,
+) -> None:
+    digest = build_daily_digest(db)
+    logger.info("\n%s", format_daily_digest(digest))
+    if telegram:
+        try:
+            telegram.send_daily_digest(digest)
+            logger.info("Telegram daily digest sent")
+        except Exception:
+            logger.exception("Telegram daily digest failed")
+
+
 def run_local(
     config: Config,
     db: Database,
@@ -420,7 +488,9 @@ def main() -> None:
         raise SystemExit(1)
 
     try:
-        if args.trend_report:
+        if args.daily_digest:
+            print_and_send_daily_digest(db, build_telegram(config, args.no_telegram))
+        elif args.trend_report:
             print_and_send_trend_report(db, build_telegram(config, args.no_telegram))
         elif args.mode == "local":
             run_local(config, db, args.no_telegram, args.summary)

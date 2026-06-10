@@ -168,6 +168,14 @@ python -m app.main --trend-report
 
 Each processing run stores the current detected narrative hype scores in SQLite. The trend report shows average narrative scores for the last 24 hours and 7 days, plus growth over the last 24 hours compared with the preceding 24 hours.
 
+Print a daily digest from the last 24 hours and optionally send it to Telegram:
+
+```bash
+python -m app.main --daily-digest
+```
+
+The digest includes the top five tokens, top five narratives, fastest-growing narrative, three most important posts or articles, and a short closing summary.
+
 Run the Telegram payload tests without sending a real message:
 
 ```bash

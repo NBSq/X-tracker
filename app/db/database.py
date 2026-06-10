@@ -117,6 +117,9 @@ class Database:
             (f"-{lookback_minutes} minutes", f"-{lookback_minutes} minutes"),
         ).fetchall()
 
+    def get_signal_stats_for_hours(self, lookback_hours: int = 24) -> list[sqlite3.Row]:
+        return self.get_recent_signal_stats(lookback_hours * 60)
+
     def get_signal_posts(
         self,
         kind: str,
