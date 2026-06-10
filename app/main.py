@@ -26,6 +26,7 @@ from app.alerts.telegram import (
 from app.config import Config, load_config
 from app.db.database import Database
 from app.scoring.hype_score import build_hype_signal
+from app.scoring.momentum_score import NarrativeMomentum, calculate_momentum_score
 from app.sources.local_client import load_sample_posts
 from app.sources.rss_client import RSSClient, load_rss_feeds
 from app.sources.x_client import XClient, XPost
@@ -139,6 +140,7 @@ def evaluate_hype(
     telegram: TelegramAlerter | None,
     analyzer: Analyzer,
 ) -> None:
+    momentum_scores = build_momentum_scores(db)
     for row in db.get_recent_signal_stats():
         signal = build_hype_signal(row)
         logger.info(
@@ -193,12 +195,19 @@ def evaluate_hype(
                 related_tokens,
                 related_narratives,
             )
+        relevant_momentum = [
+            item
+            for item in momentum_scores
+            if item.name in related_narratives
+            or (signal.kind == "narrative" and item.name == signal.name)
+        ]
         alert = HypeAlert(
             signal=signal,
             insight=insight,
             top_posts=top_posts,
             related_tokens=related_tokens,
             related_narratives=related_narratives,
+            momentum=(relevant_momentum or momentum_scores)[:5],
         )
 
         logger.warning("\n%s", format_hype_alert(alert))
@@ -283,6 +292,7 @@ def build_trend_report(db: Database) -> TrendReport:
         top_24h=top_24h,
         top_7d=top_7d,
         fastest_growing=fastest_growing,
+        momentum=build_momentum_scores(db)[:5],
     )
 
 
@@ -344,7 +354,28 @@ def build_daily_digest(db: Database) -> DailyDigest:
         fastest_growing=fastest_growing,
         important_posts=important_posts,
         final_summary=final_summary,
+        momentum=build_momentum_scores(db)[:5],
     )
+
+
+def build_momentum_scores(db: Database) -> list[NarrativeMomentum]:
+    growth = {
+        str(row["narrative"]): float(row["growth_percent"])
+        for row in db.get_fastest_growing_narratives(limit=100)
+    }
+    scores = [
+        NarrativeMomentum(
+            name=str(row["narrative"]),
+            score=calculate_momentum_score(
+                mentions_count=int(row["mentions_count"]),
+                average_importance=float(row["average_importance"]),
+                growth_percent=growth.get(str(row["narrative"]), 0.0),
+                recency_hours=float(row["recency_hours"] or 0.0),
+            ),
+        )
+        for row in db.get_narrative_momentum_inputs()
+    ]
+    return sorted(scores, key=lambda item: item.score, reverse=True)
 
 
 def print_and_send_daily_digest(

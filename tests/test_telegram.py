@@ -22,6 +22,7 @@ from app.alerts.telegram import (
     format_trend_report,
 )
 from app.scoring.hype_score import HypeSignal
+from app.scoring.momentum_score import NarrativeMomentum
 
 
 class TelegramAlertTests(unittest.TestCase):
@@ -47,6 +48,7 @@ class TelegramAlertTests(unittest.TestCase):
             ],
             related_tokens=["JUP", "SOL"],
             related_narratives=["Memecoins", "Solana ecosystem"],
+            momentum=[NarrativeMomentum(name="Solana ecosystem", score=92)],
         )
         self.summary = NarrativeSummary(
             top_tokens=[
@@ -69,6 +71,10 @@ class TelegramAlertTests(unittest.TestCase):
                 NarrativeGrowth(name="AI <Agents>", growth_percent=42.0),
                 NarrativeGrowth(name="Memecoins", growth_percent=-8.0),
             ],
+            momentum=[
+                NarrativeMomentum(name="AI Agents", score=92),
+                NarrativeMomentum(name="RWA", score=61),
+            ],
         )
         self.daily_digest = DailyDigest(
             top_tokens=[SummaryItem(name="SOL <script>", hype_score=36.0)],
@@ -76,6 +82,7 @@ class TelegramAlertTests(unittest.TestCase):
             fastest_growing=NarrativeGrowth(name="RWA", growth_percent=15.0),
             important_posts=[AlertPost(username="alice", text="SOL is strong <today>")],
             final_summary="SOL and AI <Agents> led attention.",
+            momentum=[NarrativeMomentum(name="AI <Agents>", score=92)],
         )
 
     def test_html_formatter_escapes_dynamic_content(self) -> None:
@@ -93,6 +100,7 @@ class TelegramAlertTests(unittest.TestCase):
         self.assertIn("Action: research", message)
         self.assertIn("1. @alice:", message)
         self.assertIn("Tokens: JUP, SOL", message)
+        self.assertIn("Solana ecosystem 92", message)
 
     def test_summary_formatters_include_rankings_and_escape_html(self) -> None:
         plain = format_summary(self.summary)
@@ -131,6 +139,7 @@ class TelegramAlertTests(unittest.TestCase):
         self.assertIn("AI <Agents> +42%", plain)
         self.assertIn("Memecoins -8%", plain)
         self.assertIn("AI &lt;Agents&gt;", html)
+        self.assertIn("AI Agents 92", plain)
 
     @patch("app.alerts.telegram.requests.post")
     def test_trend_report_sender_uses_html_parse_mode(self, post) -> None:
@@ -150,6 +159,7 @@ class TelegramAlertTests(unittest.TestCase):
         self.assertIn("RWA +15%", plain)
         self.assertIn("SOL &lt;script&gt;", html)
         self.assertIn("AI &lt;Agents&gt;", html)
+        self.assertIn("AI &lt;Agents&gt; 92", html)
 
     @patch("app.alerts.telegram.requests.post")
     def test_daily_digest_sender_uses_html_parse_mode(self, post) -> None:

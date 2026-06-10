@@ -3,7 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from app.ai.analyzer import AnalysisResult
 from app.db.database import Database
+from app.sources.x_client import XPost
 
 
 class NarrativeHistoryTests(unittest.TestCase):
@@ -58,6 +60,30 @@ class NarrativeHistoryTests(unittest.TestCase):
 
         self.assertEqual(growth[0]["narrative"], "RWA")
         self.assertAlmostEqual(growth[0]["growth_percent"], 50.0)
+
+    def test_momentum_inputs_include_mentions_importance_and_recency(self) -> None:
+        post = XPost(
+            id="momentum-post",
+            username="analyst",
+            text="AI agents are growing",
+            created_at=None,
+            url="local://momentum-post",
+        )
+        analysis = AnalysisResult(
+            tokens=[],
+            narratives=["AI Agents"],
+            sentiment="bullish",
+            importance=8,
+            summary="AI agents are growing",
+        )
+        self.db.save_analysis(post, analysis)
+
+        rows = self.db.get_narrative_momentum_inputs()
+
+        self.assertEqual(rows[0]["narrative"], "AI Agents")
+        self.assertEqual(rows[0]["mentions_count"], 1)
+        self.assertEqual(rows[0]["average_importance"], 8.0)
+        self.assertLess(rows[0]["recency_hours"], 1.0)
 
 
 if __name__ == "__main__":

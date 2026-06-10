@@ -176,6 +176,8 @@ python -m app.main --daily-digest
 
 The digest includes the top five tokens, top five narratives, fastest-growing narrative, three most important posts or articles, and a short closing summary.
 
+Narrative Momentum is a heuristic score from 0 to 100 based on mention count, growth rate, average importance, and recency. Ranked momentum scores are included in hype alerts, trend reports, and daily digests.
+
 Run the Telegram payload tests without sending a real message:
 
 ```bash
@@ -188,3 +190,58 @@ python -m unittest tests.test_telegram
 - The app skips posts already stored by `post_id`.
 - Alerts are de-duplicated for the same token or narrative within a 60-minute window.
 - SQLite JSON queries use SQLite's built-in JSON functions, available in modern Python SQLite builds.
+
+## Windows Task Scheduler
+
+The scripts in `scripts/` switch to the project directory before running, so Task Scheduler does not need a separate working-directory setting. Make sure `python` is available on the Windows PATH for the account running the tasks.
+
+Test both scripts manually first:
+
+```powershell
+scripts\run_rss_mock.bat
+scripts\run_daily_digest.bat
+```
+
+### Run RSS mock mode every 15 minutes
+
+1. Open **Task Scheduler** and select **Create Task**.
+2. On **General**, name the task `x-narrative-tracker RSS`.
+3. On **Triggers**, create a daily trigger with any start time.
+4. Enable **Repeat task every: 15 minutes** for **a duration of: Indefinitely**.
+5. On **Actions**, select **Start a program**.
+6. Set **Program/script** to the full path:
+
+```text
+<PROJECT_DIR>\scripts\run_rss_mock.bat
+```
+
+7. On **Settings**, enable **Run task as soon as possible after a scheduled start is missed**.
+8. Set **If the task is already running** to **Do not start a new instance**.
+
+The script runs:
+
+```text
+python -m app.main --mode rss --mock-ai
+```
+
+RSS mode stays running and performs its own 15-minute polling loop. The **Do not start a new instance** setting prevents Task Scheduler from launching duplicate trackers.
+
+### Run the daily digest every morning
+
+1. Create another task named `x-narrative-tracker Daily Digest`.
+2. Add a daily trigger at the preferred morning time, such as `08:00`.
+3. Add a **Start a program** action using:
+
+```text
+<PROJECT_DIR>\scripts\run_daily_digest.bat
+```
+
+4. Enable **Run task as soon as possible after a scheduled start is missed**.
+
+The script runs:
+
+```text
+python -m app.main --daily-digest
+```
+
+Telegram delivery occurs automatically when both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are configured in `.env`.

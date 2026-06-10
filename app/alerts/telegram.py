@@ -7,6 +7,7 @@ import requests
 
 from app.ai.analyzer import SpikeInsight
 from app.scoring.hype_score import HypeSignal
+from app.scoring.momentum_score import NarrativeMomentum
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,7 @@ class HypeAlert:
     top_posts: list[AlertPost]
     related_tokens: list[str]
     related_narratives: list[str]
+    momentum: list[NarrativeMomentum]
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,7 @@ class TrendReport:
     top_24h: list[NarrativeTrend]
     top_7d: list[NarrativeTrend]
     fastest_growing: list[NarrativeGrowth]
+    momentum: list[NarrativeMomentum]
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,7 @@ class DailyDigest:
     fastest_growing: NarrativeGrowth | None
     important_posts: list[AlertPost]
     final_summary: str
+    momentum: list[NarrativeMomentum]
 
 
 class TelegramAlerter:
@@ -125,6 +129,7 @@ def format_hype_alert(alert: HypeAlert) -> str:
         f"{index}. @{post.username}: {post.text}"
         for index, post in enumerate(alert.top_posts, start=1)
     )
+    momentum = "\n".join(f"{item.name} {item.score}" for item in alert.momentum)
     return (
         "🚨 Crypto Hype Spike\n\n"
         f"Token/Narrative: {signal.name}\n"
@@ -136,6 +141,7 @@ def format_hype_alert(alert: HypeAlert) -> str:
         "Related:\n"
         f"Tokens: {', '.join(alert.related_tokens) or 'None'}\n"
         f"Narratives: {', '.join(alert.related_narratives) or 'None'}"
+        f"\n\nNarrative Momentum:\n{momentum or 'None'}"
     )
 
 
@@ -147,6 +153,9 @@ def format_telegram_hype_alert(alert: HypeAlert) -> str:
     )
     tokens = ", ".join(escape(token) for token in alert.related_tokens) or "None"
     narratives = ", ".join(escape(item) for item in alert.related_narratives) or "None"
+    momentum = "\n".join(
+        f"{escape(item.name)} {item.score}" for item in alert.momentum
+    )
     return (
         "🚨 <b>Crypto Hype Spike</b>\n\n"
         f"<b>Token/Narrative:</b> {escape(signal.name)}\n"
@@ -158,6 +167,7 @@ def format_telegram_hype_alert(alert: HypeAlert) -> str:
         "<b>Related:</b>\n"
         f"<b>Tokens:</b> {tokens}\n"
         f"<b>Narratives:</b> {narratives}"
+        f"\n\n<b>Narrative Momentum:</b>\n{momentum or 'None'}"
     )
 
 
@@ -216,11 +226,13 @@ def format_trend_report(report: TrendReport) -> str:
         f"{item.name} {item.growth_percent:+.0f}%"
         for item in report.fastest_growing
     )
+    momentum = "\n".join(f"{item.name} {item.score}" for item in report.momentum)
     return (
         "📈 Crypto Narrative Trend Report\n\n"
         f"Top narratives last 24h\n{top_24h or 'None'}\n\n"
         f"Top narratives last 7d\n{top_7d or 'None'}\n\n"
-        f"Fastest growing narratives\n{growing or 'None'}"
+        f"Fastest growing narratives\n{growing or 'None'}\n\n"
+        f"Narrative Momentum\n{momentum or 'None'}"
     )
 
 
@@ -237,11 +249,15 @@ def format_telegram_trend_report(report: TrendReport) -> str:
         f"{escape(item.name)} {item.growth_percent:+.0f}%"
         for item in report.fastest_growing
     )
+    momentum = "\n".join(
+        f"{escape(item.name)} {item.score}" for item in report.momentum
+    )
     return (
         "📈 <b>Crypto Narrative Trend Report</b>\n\n"
         f"<b>Top narratives last 24h</b>\n{top_24h or 'None'}\n\n"
         f"<b>Top narratives last 7d</b>\n{top_7d or 'None'}\n\n"
-        f"<b>Fastest growing narratives</b>\n{growing or 'None'}"
+        f"<b>Fastest growing narratives</b>\n{growing or 'None'}\n\n"
+        f"<b>Narrative Momentum</b>\n{momentum or 'None'}"
     )
 
 
@@ -263,12 +279,14 @@ def format_daily_digest(digest: DailyDigest) -> str:
         f"{index}. @{post.username}: {post.text}"
         for index, post in enumerate(digest.important_posts, start=1)
     )
+    momentum = "\n".join(f"{item.name} {item.score}" for item in digest.momentum)
     return (
         "🗞 Crypto Daily Digest\n\n"
         f"Top 5 tokens last 24h\n{tokens or 'None'}\n\n"
         f"Top 5 narratives last 24h\n{narratives or 'None'}\n\n"
         f"Fastest growing narrative\n{growing}\n\n"
         f"Top articles/posts\n{posts or 'None'}\n\n"
+        f"Narrative Momentum\n{momentum or 'None'}\n\n"
         f"Summary\n{digest.final_summary}"
     )
 
@@ -292,11 +310,15 @@ def format_telegram_daily_digest(digest: DailyDigest) -> str:
         f"{index}. @{escape(post.username)}: {escape(post.text[:300])}"
         for index, post in enumerate(digest.important_posts, start=1)
     )
+    momentum = "\n".join(
+        f"{escape(item.name)} {item.score}" for item in digest.momentum
+    )
     return (
         "🗞 <b>Crypto Daily Digest</b>\n\n"
         f"<b>Top 5 tokens last 24h</b>\n{tokens or 'None'}\n\n"
         f"<b>Top 5 narratives last 24h</b>\n{narratives or 'None'}\n\n"
         f"<b>Fastest growing narrative</b>\n{growing}\n\n"
         f"<b>Top articles/posts</b>\n{posts or 'None'}\n\n"
+        f"<b>Narrative Momentum</b>\n{momentum or 'None'}\n\n"
         f"<b>Summary</b>\n{escape(digest.final_summary)}"
     )

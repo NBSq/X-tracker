@@ -251,6 +251,22 @@ class Database:
             (limit,),
         ).fetchall()
 
+    def get_narrative_momentum_inputs(self) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT
+                value AS narrative,
+                COUNT(*) AS mentions_count,
+                AVG(importance) AS average_importance,
+                (julianday('now') - julianday(MAX(analyzed_at))) * 24.0 AS recency_hours
+            FROM analyzed_posts, json_each(narratives_json)
+            WHERE analyzed_at >= datetime('now', '-24 hours')
+              AND value IS NOT NULL
+              AND TRIM(value) != ''
+            GROUP BY value
+            """
+        ).fetchall()
+
     def alert_recently_sent(self, kind: str, name: str, lookback_minutes: int = 60) -> bool:
         row = self.connection.execute(
             """
