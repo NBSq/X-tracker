@@ -1,23 +1,83 @@
 # x-narrative-tracker
 
-Python MVP that watches selected crypto Twitter/X accounts, analyzes recent posts with OpenAI, stores structured results in SQLite, and sends Telegram alerts when a token or narrative gets unusually hot.
+Local-first crypto narrative intelligence from X posts and RSS news.
 
-## What It Does
+`x-narrative-tracker` collects recent crypto content, extracts tokens and narratives, measures hype and momentum, stores historical signals in SQLite, and delivers actionable Telegram alerts and reports.
 
-- Fetches latest posts from usernames in `data/accounts.json`
-- Sends each new post to OpenAI for strict JSON analysis
-- Extracts mentioned tokens, crypto narratives, sentiment, importance, and summary
-- Stores analyzed posts in SQLite
-- Calculates hype as:
+The project supports real APIs, public RSS feeds, and a fully local mock-AI workflow for development and evaluation.
 
-```text
-hype = mentions_count * average_importance
+## Highlights
+
+- Monitor configured X accounts through an X API v2-compatible client
+- Ingest crypto news from configurable RSS and Atom feeds
+- Analyze content with OpenAI structured outputs or deterministic mock AI
+- Extract tokens, narratives, sentiment, importance, and summaries
+- Calculate hype scores and 0-100 Narrative Momentum scores
+- Track narrative history, growth, recency, and importance in SQLite
+- Send HTML-formatted Telegram spike alerts, summaries, trends, and digests
+- Run a complete local MVP without X or OpenAI credentials
+
+## Screenshots
+
+Screenshots are not committed yet. The recommended initial screenshot set is:
+
+| View | Description |
+| --- | --- |
+| Telegram spike alert | Hype score, confidence, action, top posts, and related narratives |
+| Daily digest | Top tokens, narratives, momentum, and important articles |
+| Local MVP console | Offline analysis and alert generation |
+| Trend report | 24-hour and 7-day narrative rankings |
+
+Place future images in `docs/screenshots/` and reference them here.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    X["X API v2"] --> Sources["Source Clients"]
+    RSS["RSS / Atom Feeds"] --> Sources
+    Local["Local Sample Posts"] --> Sources
+
+    Sources --> Posts["Shared Post Model"]
+    Posts --> Analyzer{"Analyzer"}
+    Analyzer --> OpenAI["OpenAI Structured Output"]
+    Analyzer --> MockAI["Mock AI Keyword Rules"]
+
+    OpenAI --> DB[("SQLite")]
+    MockAI --> DB
+
+    DB --> Hype["Hype Scoring"]
+    DB --> Momentum["Narrative Momentum"]
+    DB --> History["Narrative History"]
+
+    Hype --> Alerts["Spike Alerts"]
+    Momentum --> Reports["Trend Reports / Daily Digests"]
+    History --> Reports
+
+    Alerts --> Console["Console Logging"]
+    Alerts --> Telegram["Telegram Bot API"]
+    Reports --> Console
+    Reports --> Telegram
 ```
 
-- Sends Telegram alerts when hype crosses the configured threshold
-- Runs continuously every 15 minutes by default
-- Includes a fully offline local MVP mode with fake posts and deterministic analysis
-- Enriches spike alerts with top posts, related signals, confidence, and a watchlist action
+## Scoring
+
+### Hype Score
+
+```text
+hype score = mentions count * average importance
+```
+
+### Narrative Momentum
+
+Narrative Momentum is a bounded `0-100` heuristic combining:
+
+- Mentions during the last 24 hours
+- Growth versus the preceding 24-hour period
+- Average importance
+- Recency of the latest mention
+
+Momentum rankings appear in spike alerts, trend reports, and daily digests.
 
 ## Project Structure
 
@@ -25,46 +85,56 @@ hype = mentions_count * average_importance
 app/
   main.py
   config.py
-  sources/x_client.py
-  sources/rss_client.py
   ai/analyzer.py
-  db/database.py
   alerts/telegram.py
+  db/database.py
   scoring/hype_score.py
+  scoring/momentum_score.py
+  sources/local_client.py
+  sources/rss_client.py
+  sources/x_client.py
 data/
   accounts.json
   narratives.json
-  sample_posts.json
   rss_feeds.json
+  sample_posts.json
+scripts/
+  run_daily_digest.bat
+  run_rss_mock.bat
+tests/
 ```
+
+## Requirements
+
+- Python 3.11+
+- SQLite with JSON functions
+- Internet access for RSS, X, OpenAI, or Telegram integrations
 
 ## Setup
 
-Requires Python 3.11.
+Create a virtual environment and install dependencies:
 
-```bash
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-copy .env.example .env
+Copy-Item .env.example .env
 ```
 
-Edit `.env` before using live mode:
+Configure `.env`:
 
-```text
-X_BEARER_TOKEN=your_x_bearer_token
-OPENAI_API_KEY=your_openai_api_key
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-TELEGRAM_CHAT_ID=your_telegram_chat_id
-```
+```dotenv
+# Required for live X mode
+X_BEARER_TOKEN=
 
-Telegram credentials are optional. When omitted, spike alerts are printed to the console only.
+# Required for OpenAI analysis; not required with --mock-ai
+OPENAI_API_KEY=
 
-Live-mode spike explanations are generated with OpenAI. Local mode produces a deterministic offline explanation so the complete alert workflow can be tested without API credentials.
+# Optional: both values are required to enable Telegram delivery
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
 
-Optional settings:
-
-```text
+# Optional application settings
 DATABASE_PATH=x_narrative_tracker.sqlite3
 OPENAI_MODEL=gpt-4o-mini
 FETCH_INTERVAL_SECONDS=900
@@ -73,175 +143,225 @@ POSTS_PER_ACCOUNT=10
 RSS_ARTICLES_PER_FEED=10
 ```
 
-## Configure Sources
+When Telegram credentials are missing, the application continues normally and logs reports to the console.
 
-Update `data/accounts.json` with X usernames:
+## Quick Start
 
-```json
-{
-  "accounts": ["elonmusk", "VitalikButerin", "a16zcrypto"]
-}
+Run the complete offline local MVP:
+
+```powershell
+python -m app.main --mode local --reset-db --summary
 ```
 
-Update `data/narratives.json` with narratives you care about:
+This command reads 30 sample posts, performs deterministic analysis, stores results in SQLite, calculates scores, prints alerts, and produces a summary.
 
-```json
-{
-  "narratives": ["AI agents", "DePIN", "restaking"]
-}
-```
+## Source Modes
 
-## Run
+### Local Mode
 
-Live mode requires X and OpenAI credentials and loops every 15 minutes:
+Local mode requires no X or OpenAI credentials:
 
-```bash
-python -m app.main
-```
-
-RSS mode reads the public feeds configured in `data/rss_feeds.json`, analyzes new articles with OpenAI, and reuses the same SQLite, hype scoring, and Telegram alert pipeline:
-
-```bash
-python -m app.main --mode rss
-```
-
-RSS mode requires `OPENAI_API_KEY` but does not require `X_BEARER_TOKEN`. Individual feed failures are logged and do not stop other feeds from being processed.
-
-RSS article authors are mapped to the shared post record's `username` field for compatibility with existing storage and alerts, and are also available through its `author` property.
-
-Run RSS mode without an OpenAI key or OpenAI API calls:
-
-```bash
-python -m app.main --mode rss --mock-ai
-```
-
-`--mock-ai` uses deterministic keyword rules to detect common tokens and configured narratives, then generates sentiment, importance, spike explanations, confidence, and watchlist actions locally. It reuses the same SQLite, alert, and summary pipeline.
-
-The app loops forever. To test faster, set:
-
-```text
-FETCH_INTERVAL_SECONDS=60
-HYPE_ALERT_THRESHOLD=5
-```
-
-## Local MVP test
-
-Local mode requires no X API or OpenAI API credentials. It reads 30 fake crypto posts from `data/sample_posts.json`, analyzes them with the built-in deterministic analyzer, stores results in SQLite, calculates hype scores, and prints spike alerts to the console.
-
-```bash
-copy .env.example .env
+```powershell
 python -m app.main --mode local
 ```
 
-Disable Telegram explicitly while keeping console alerts:
+Useful options:
 
-```bash
+```powershell
+python -m app.main --mode local --reset-db
+python -m app.main --mode local --summary
 python -m app.main --mode local --no-telegram
 ```
 
-To optionally send the same alerts to Telegram, set both values in `.env`:
+### RSS Mode
 
-```text
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-TELEGRAM_CHAT_ID=your_telegram_chat_id
+RSS mode reads public feeds from `data/rss_feeds.json` and runs continuously using the configured polling interval:
+
+```powershell
+python -m app.main --mode rss
 ```
 
-Local mode is a one-shot run. Posts and alerts are de-duplicated in SQLite, so use a fresh `DATABASE_PATH` or remove the test database when you want to replay every alert.
+RSS mode requires `OPENAI_API_KEY` unless mock AI is enabled.
 
-Reset all previous analyses and alerts before replaying the local MVP:
+Example feed configuration:
 
-```bash
-python -m app.main --mode local --reset-db
+```json
+{
+  "RSS_FEEDS": [
+    {
+      "name": "CoinDesk",
+      "url": "https://www.coindesk.com/arc/outboundfeeds/rss/"
+    }
+  ]
+}
 ```
 
-Print a summary report and optionally send it to Telegram:
+Each feed is isolated: an unavailable or malformed feed is logged without stopping the remaining sources.
 
-```bash
-python -m app.main --mode local --summary
+### X Mode
+
+Configure usernames in `data/accounts.json`, then run:
+
+```powershell
+python -m app.main --mode live
 ```
 
-Print narrative history trends and optionally send them to Telegram:
+Live mode requires `X_BEARER_TOKEN` and, unless mock AI is enabled, `OPENAI_API_KEY`.
 
-```bash
+## Mock AI Mode
+
+Mock AI uses local keyword rules instead of OpenAI:
+
+```powershell
+python -m app.main --mode rss --mock-ai
+python -m app.main --mode live --mock-ai
+```
+
+It detects common tokens and configured narrative aliases, then generates sentiment, importance, spike explanations, confidence, and suggested actions. The database, alerts, momentum, and report pipeline remains identical.
+
+Mock AI removes OpenAI dependency, but RSS and X modes still require network access to their respective sources.
+
+## Reports
+
+Generate a narrative trend report from stored history:
+
+```powershell
 python -m app.main --trend-report
 ```
 
-Each processing run stores the current detected narrative hype scores in SQLite. The trend report shows average narrative scores for the last 24 hours and 7 days, plus growth over the last 24 hours compared with the preceding 24 hours.
+The report includes:
 
-Print a daily digest from the last 24 hours and optionally send it to Telegram:
+- Top narratives over the last 24 hours
+- Top narratives over the last 7 days
+- Fastest-growing narratives
+- Narrative Momentum rankings
 
-```bash
+Generate a daily digest:
+
+```powershell
 python -m app.main --daily-digest
 ```
 
-The digest includes the top five tokens, top five narratives, fastest-growing narrative, three most important posts or articles, and a short closing summary.
+The digest includes:
 
-Narrative Momentum is a heuristic score from 0 to 100 based on mention count, growth rate, average importance, and recency. Ranked momentum scores are included in hype alerts, trend reports, and daily digests.
+- Top five tokens from the last 24 hours
+- Top five narratives from the last 24 hours
+- Fastest-growing narrative
+- Top three most important posts or articles
+- Narrative Momentum rankings
+- Short closing summary
 
-Run the Telegram payload tests without sending a real message:
+Reports are sent to Telegram automatically when credentials are configured. Add `--no-telegram` for console-only output.
 
-```bash
-python -m unittest tests.test_telegram
+## Telegram Examples
+
+### Hype Spike
+
+```text
+Crypto Hype Spike
+
+Token/Narrative: SOL
+Hype Score: 36.00
+Confidence: 8/10
+Action: research
+
+Why it matters:
+SOL is appearing across several high-importance posts.
+
+Top posts:
+1. @account: SOL activity continues to grow...
+
+Narrative Momentum:
+Solana ecosystem 92
 ```
 
-## Notes
+### Daily Digest
 
-- X API v2 access and rate limits depend on your X developer plan.
-- The app skips posts already stored by `post_id`.
-- Alerts are de-duplicated for the same token or narrative within a 60-minute window.
-- SQLite JSON queries use SQLite's built-in JSON functions, available in modern Python SQLite builds.
+```text
+Crypto Daily Digest
+
+Top 5 tokens last 24h
+1. SOL - hype score 36.00
+
+Fastest growing narrative
+AI Agents +42%
+
+Narrative Momentum
+AI Agents 92
+RWA 61
+Memecoins 47
+```
+
+Telegram messages use HTML formatting and escape dynamic content before delivery.
 
 ## Windows Task Scheduler
 
-The scripts in `scripts/` switch to the project directory before running, so Task Scheduler does not need a separate working-directory setting. Make sure `python` is available on the Windows PATH for the account running the tasks.
+The included batch scripts change to the project directory before running.
 
-Test both scripts manually first:
+Test them manually:
 
 ```powershell
 scripts\run_rss_mock.bat
 scripts\run_daily_digest.bat
 ```
 
-### Run RSS mock mode every 15 minutes
+### RSS Mock Tracker
 
-1. Open **Task Scheduler** and select **Create Task**.
-2. On **General**, name the task `x-narrative-tracker RSS`.
-3. On **Triggers**, create a daily trigger with any start time.
-4. Enable **Repeat task every: 15 minutes** for **a duration of: Indefinitely**.
-5. On **Actions**, select **Start a program**.
-6. Set **Program/script** to the full path:
+Create a Task Scheduler task with:
 
-```text
-<PROJECT_DIR>\scripts\run_rss_mock.bat
+- Program: `<PROJECT_DIR>\scripts\run_rss_mock.bat`
+- Trigger: daily, repeating every 15 minutes indefinitely
+- Existing instance rule: **Do not start a new instance**
+- Setting: **Run task as soon as possible after a scheduled start is missed**
+
+RSS mode remains active and performs its own 15-minute polling loop.
+
+### Daily Digest
+
+Create a second task with:
+
+- Program: `<PROJECT_DIR>\scripts\run_daily_digest.bat`
+- Trigger: daily at the preferred morning time
+- Setting: **Run task as soon as possible after a scheduled start is missed**
+
+## Testing
+
+Run the test suite:
+
+```powershell
+python -m unittest discover -s tests
 ```
 
-7. On **Settings**, enable **Run task as soon as possible after a scheduled start is missed**.
-8. Set **If the task is already running** to **Do not start a new instance**.
+Tests cover:
 
-The script runs:
+- RSS and Atom parsing
+- Mock AI token, narrative, and sentiment detection
+- Narrative history and growth calculations
+- Narrative Momentum scoring
+- Telegram formatting, HTML escaping, and payloads
 
-```text
-python -m app.main --mode rss --mock-ai
-```
+## Data and Operations
 
-RSS mode stays running and performs its own 15-minute polling loop. The **Do not start a new instance** setting prevents Task Scheduler from launching duplicate trackers.
+- SQLite is created automatically at `DATABASE_PATH`.
+- Existing posts are skipped using their stable source IDs.
+- Spike alerts are de-duplicated for the same signal within 60 minutes.
+- Narrative score snapshots are stored after each processing run.
+- `--reset-db` clears analyses, alerts, and narrative history.
+- Individual post-analysis, feed, OpenAI, and Telegram errors are logged without silently failing.
 
-### Run the daily digest every morning
+## Roadmap
 
-1. Create another task named `x-narrative-tracker Daily Digest`.
-2. Add a daily trigger at the preferred morning time, such as `08:00`.
-3. Add a **Start a program** action using:
+- [ ] Add a web dashboard for narratives, tokens, and source activity
+- [ ] Add configurable scoring weights and time windows
+- [ ] Add source-level reliability and influence weighting
+- [ ] Add semantic clustering for emerging narratives
+- [ ] Add historical charts and momentum sparklines
+- [ ] Add PostgreSQL support for larger deployments
+- [ ] Add Docker and cross-platform service definitions
+- [ ] Add scheduled report configuration and multiple Telegram destinations
+- [ ] Add integration tests against recorded API fixtures
+- [ ] Add packaging, release automation, and a project license
 
-```text
-<PROJECT_DIR>\scripts\run_daily_digest.bat
-```
+## Disclaimer
 
-4. Enable **Run task as soon as possible after a scheduled start is missed**.
-
-The script runs:
-
-```text
-python -m app.main --daily-digest
-```
-
-Telegram delivery occurs automatically when both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are configured in `.env`.
+This project is an experimental monitoring and research tool. Scores, summaries, and suggested actions are heuristic outputs and are not financial advice.
