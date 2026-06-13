@@ -140,7 +140,7 @@ class Database:
         json_column = "tokens_json" if kind == "token" else "narratives_json"
         return self.connection.execute(
             f"""
-            SELECT username, text, tokens_json, narratives_json, importance
+            SELECT post_id, username, text, tokens_json, narratives_json, importance
             FROM analyzed_posts
             WHERE analyzed_at >= datetime('now', ?)
               AND EXISTS (

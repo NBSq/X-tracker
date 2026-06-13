@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -30,7 +31,12 @@ from app.alerts.telegram import (
 )
 from app.config import Config, load_config
 from app.db.database import Database
-from app.scoring.hype_score import build_hype_signal
+from app.scoring.hype_score import (
+    HypeCandidate,
+    build_hype_signal,
+    candidate_overlap,
+    should_merge_candidates,
+)
 from app.scoring.momentum_score import NarrativeMomentum, calculate_momentum_score
 from app.scoring.opportunity_score import build_opportunity
 from app.sources.local_client import load_sample_posts
@@ -39,6 +45,12 @@ from app.sources.x_client import XClient, XPost
 
 
 logger = logging.getLogger("x_narrative_tracker")
+
+
+@dataclass(frozen=True)
+class EnrichedCandidate:
+    candidate: HypeCandidate
+    rows: list
 
 
 class Analyzer(Protocol):
@@ -109,6 +121,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Rank narrative opportunities from stored momentum history",
     )
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Keep RSS mode running and poll continuously",
+    )
     return parser.parse_args()
 
 
@@ -158,6 +175,7 @@ def evaluate_hype(
 ) -> None:
     momentum_scores = build_momentum_scores(db)
     db.save_daily_momentum(momentum_scores)
+    candidates = []
     for row in db.get_recent_signal_stats():
         signal = build_hype_signal(row)
         logger.info(
@@ -173,74 +191,157 @@ def evaluate_hype(
         if db.alert_recently_sent(signal.kind, signal.name):
             continue
 
-        context_rows = db.get_signal_posts(signal.kind, signal.name)
-        top_posts = [
-            AlertPost(username=str(item["username"]), text=str(item["text"]))
-            for item in context_rows
-        ]
-        related_tokens = sorted(
-            {
-                str(token)
-                for item in context_rows
-                for token in json.loads(item["tokens_json"])
-            }
-        )
-        related_narratives = sorted(
-            {
-                str(narrative)
-                for item in context_rows
-                for narrative in json.loads(item["narratives_json"])
-            }
-        )
-        post_prompts = [f"@{post.username}: {post.text}" for post in top_posts]
-        try:
-            insight = analyzer.explain_spike(
-                signal.kind,
-                signal.name,
-                signal.hype_score,
-                post_prompts,
-                related_tokens,
-                related_narratives,
+        context_rows = db.get_signal_posts(signal.kind, signal.name, limit=100)
+        candidates.append(
+            EnrichedCandidate(
+                candidate=HypeCandidate(
+                    signal=signal,
+                    post_ids=frozenset(str(item["post_id"]) for item in context_rows),
+                ),
+                rows=context_rows,
             )
-        except Exception:
-            logger.exception("Could not generate spike explanation; using local fallback")
-            insight = LocalAnalyzer([]).explain_spike(
-                signal.kind,
-                signal.name,
-                signal.hype_score,
-                post_prompts,
-                related_tokens,
-                related_narratives,
-            )
-        relevant_momentum = [
+        )
+
+    for primary, merged in merge_alert_candidates(candidates):
+        send_candidate_alert(primary, merged, momentum_scores, analyzer, telegram, db)
+
+
+def merge_alert_candidates(
+    candidates: list[EnrichedCandidate],
+) -> list[tuple[EnrichedCandidate, EnrichedCandidate | None]]:
+    remaining = sorted(
+        candidates,
+        key=lambda item: item.candidate.signal.hype_score,
+        reverse=True,
+    )
+    groups = []
+    while remaining:
+        primary = remaining.pop(0)
+        matches = [
             item
-            for item in momentum_scores
-            if item.name in related_narratives
-            or (signal.kind == "narrative" and item.name == signal.name)
+            for item in remaining
+            if should_merge_candidates(primary.candidate, item.candidate)
         ]
-        alert = HypeAlert(
-            signal=signal,
-            insight=insight,
-            top_posts=top_posts,
-            related_tokens=related_tokens,
-            related_narratives=related_narratives,
-            momentum=(relevant_momentum or momentum_scores)[:5],
+        merged = max(
+            matches,
+            key=lambda item: candidate_overlap(primary.candidate, item.candidate),
+            default=None,
         )
+        if merged is not None:
+            remaining.remove(merged)
+        groups.append((primary, merged))
+    return groups
 
-        logger.warning("\n%s", format_hype_alert(alert))
-        if telegram:
-            try:
-                telegram.send_hype_alert(alert)
-                logger.info("Telegram alert sent for %s:%s", signal.kind, signal.name)
-            except Exception:
-                logger.exception("Telegram alert failed for %s:%s", signal.kind, signal.name)
 
+def send_candidate_alert(
+    primary: EnrichedCandidate,
+    merged: EnrichedCandidate | None,
+    momentum_scores: list[NarrativeMomentum],
+    analyzer: Analyzer,
+    telegram: TelegramAlerter | None,
+    db: Database,
+) -> None:
+    signal = primary.candidate.signal
+    merged_signal = merged.candidate.signal if merged else None
+    unique_rows = {
+        str(item["post_id"]): item
+        for item in primary.rows
+    }
+    if merged:
+        for item in merged.rows:
+            unique_rows.setdefault(str(item["post_id"]), item)
+    context_rows = list(unique_rows.values())
+    context_rows.sort(key=lambda item: int(item["importance"]), reverse=True)
+    merged_hype_score = None
+    if merged_signal and context_rows:
+        unique_mentions_count = len(context_rows)
+        average_importance = sum(
+            float(item["importance"]) for item in context_rows
+        ) / unique_mentions_count
+        merged_hype_score = unique_mentions_count * average_importance
+    context_rows = context_rows[:3]
+    top_posts = [
+        AlertPost(username=str(item["username"]), text=str(item["text"]))
+        for item in context_rows
+    ]
+    related_tokens = sorted(
+        {
+            str(token)
+            for item in context_rows
+            for token in json.loads(item["tokens_json"])
+        }
+    )
+    related_narratives = sorted(
+        {
+            str(narrative)
+            for item in context_rows
+            for narrative in json.loads(item["narratives_json"])
+        }
+    )
+    post_prompts = [f"@{post.username}: {post.text}" for post in top_posts]
+    combined_kind = "token + narrative" if merged_signal else signal.kind
+    combined_name = (
+        f"{signal.name} + {merged_signal.name}" if merged_signal else signal.name
+    )
+    combined_hype = merged_hype_score if merged_hype_score is not None else signal.hype_score
+    try:
+        insight = analyzer.explain_spike(
+            combined_kind,
+            combined_name,
+            combined_hype,
+            post_prompts,
+            related_tokens,
+            related_narratives,
+        )
+    except Exception:
+        logger.exception("Could not generate spike explanation; using local fallback")
+        insight = LocalAnalyzer([]).explain_spike(
+            combined_kind,
+            combined_name,
+            combined_hype,
+            post_prompts,
+            related_tokens,
+            related_narratives,
+        )
+    relevant_momentum = [
+        item
+        for item in momentum_scores
+        if item.name in related_narratives
+        or (signal.kind == "narrative" and item.name == signal.name)
+        or (
+            merged_signal is not None
+            and merged_signal.kind == "narrative"
+            and item.name == merged_signal.name
+        )
+    ]
+    alert = HypeAlert(
+        signal=signal,
+        insight=insight,
+        top_posts=top_posts,
+        related_tokens=related_tokens,
+        related_narratives=related_narratives,
+        momentum=(relevant_momentum or momentum_scores)[:5],
+        merged_signal=merged_signal,
+        merged_hype_score=merged_hype_score,
+    )
+
+    logger.warning("\n%s", format_hype_alert(alert))
+    if telegram:
+        try:
+            telegram.send_hype_alert(alert)
+            logger.info("Telegram alert sent for %s", combined_name)
+        except Exception:
+            logger.exception("Telegram alert failed for %s", combined_name)
+
+    for item in (signal, merged_signal):
+        if item is None:
+            continue
         db.save_alert(
-            signal.kind,
-            signal.name,
-            signal.hype_score,
-            signal.mentions_count,
-            signal.average_importance,
+            item.kind,
+            item.name,
+            item.hype_score,
+            item.mentions_count,
+            item.average_importance,
         )
 
 
@@ -585,8 +686,12 @@ def run_rss(
     db: Database,
     no_telegram: bool = False,
     mock_ai: bool = False,
+    watch: bool = False,
 ) -> None:
     validate_rss_config(config, mock_ai)
+    if not watch:
+        run_rss_once(config, db, no_telegram, mock_ai)
+        return
     while True:
         started_at = time.time()
         try:
@@ -627,7 +732,7 @@ def main() -> None:
         elif args.mode == "local":
             run_local(config, db, args.no_telegram, args.summary)
         elif args.mode == "rss":
-            run_rss(config, db, args.no_telegram, args.mock_ai)
+            run_rss(config, db, args.no_telegram, args.mock_ai, args.watch)
         else:
             run_live(config, db, args.no_telegram, args.mock_ai)
     except KeyboardInterrupt:

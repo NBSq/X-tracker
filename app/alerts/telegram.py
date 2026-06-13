@@ -25,6 +25,8 @@ class HypeAlert:
     related_tokens: list[str]
     related_narratives: list[str]
     momentum: list[NarrativeMomentum]
+    merged_signal: HypeSignal | None = None
+    merged_hype_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -167,16 +169,16 @@ class TelegramAlerter:
 
 
 def format_hype_alert(alert: HypeAlert) -> str:
-    signal = alert.signal
     posts = "\n".join(
         f"{index}. @{post.username}: {post.text}"
         for index, post in enumerate(alert.top_posts, start=1)
     )
     momentum = "\n".join(f"{item.name} {item.score}" for item in alert.momentum)
     return (
-        "🚨 Crypto Hype Spike\n\n"
-        f"Token/Narrative: {signal.name}\n"
-        f"Hype Score: {signal.hype_score:.2f}\n"
+        f"🚨 Crypto Hype Spike: {_alert_title(alert)}\n\n"
+        f"{_plain_signal_fields(alert)}"
+        f"Hype Score: {_combined_hype_score(alert):.2f}\n"
+        f"{_plain_components(alert)}"
         f"Confidence: {alert.insight.confidence}/10\n"
         f"Action: {alert.insight.action}\n\n"
         f"Why it matters:\n{alert.insight.explanation}\n\n"
@@ -189,7 +191,6 @@ def format_hype_alert(alert: HypeAlert) -> str:
 
 
 def format_telegram_hype_alert(alert: HypeAlert) -> str:
-    signal = alert.signal
     posts = "\n".join(
         f"{index}. @{escape(post.username)}: {escape(post.text[:300])}"
         for index, post in enumerate(alert.top_posts, start=1)
@@ -200,9 +201,10 @@ def format_telegram_hype_alert(alert: HypeAlert) -> str:
         f"{escape(item.name)} {item.score}" for item in alert.momentum
     )
     return (
-        "🚨 <b>Crypto Hype Spike</b>\n\n"
-        f"<b>Token/Narrative:</b> {escape(signal.name)}\n"
-        f"<b>Hype Score:</b> {signal.hype_score:.2f}\n"
+        f"🚨 <b>Crypto Hype Spike: {escape(_alert_title(alert))}</b>\n\n"
+        f"{_html_signal_fields(alert)}"
+        f"<b>Hype Score:</b> {_combined_hype_score(alert):.2f}\n"
+        f"{_html_components(alert)}"
         f"<b>Confidence:</b> {alert.insight.confidence}/10\n"
         f"<b>Action:</b> {escape(alert.insight.action)}\n\n"
         f"<b>Why it matters:</b>\n{escape(alert.insight.explanation)}\n\n"
@@ -212,6 +214,85 @@ def format_telegram_hype_alert(alert: HypeAlert) -> str:
         f"<b>Narratives:</b> {narratives}"
         f"\n\n<b>Narrative Momentum:</b>\n{momentum or 'None'}"
     )
+
+
+def _combined_hype_score(alert: HypeAlert) -> float:
+    if alert.merged_signal is None:
+        return alert.signal.hype_score
+    if alert.merged_hype_score is not None:
+        return alert.merged_hype_score
+    return max(alert.signal.hype_score, alert.merged_signal.hype_score)
+
+
+def _alert_title(alert: HypeAlert) -> str:
+    if alert.merged_signal is None:
+        return alert.signal.name
+    signals = [alert.signal, alert.merged_signal]
+    token = next((item.name for item in signals if item.kind == "token"), None)
+    narrative = next((item.name for item in signals if item.kind == "narrative"), None)
+    return " + ".join(item for item in (token, narrative) if item)
+
+
+def _plain_signal_fields(alert: HypeAlert) -> str:
+    if alert.merged_signal is None:
+        return f"Type: {alert.signal.kind}\nToken/Narrative: {alert.signal.name}\n"
+    signals = [alert.signal, alert.merged_signal]
+    token = next(item.name for item in signals if item.kind == "token")
+    narrative = next(item.name for item in signals if item.kind == "narrative")
+    return (
+        "Type: token + narrative\n"
+        f"Token: {token}\n"
+        f"Narrative: {narrative}\n"
+    )
+
+
+def _html_signal_fields(alert: HypeAlert) -> str:
+    if alert.merged_signal is None:
+        return (
+            f"<b>Type:</b> {escape(alert.signal.kind)}\n"
+            f"<b>Token/Narrative:</b> {escape(alert.signal.name)}\n"
+        )
+    signals = [alert.signal, alert.merged_signal]
+    token = next(item.name for item in signals if item.kind == "token")
+    narrative = next(item.name for item in signals if item.kind == "narrative")
+    return (
+        "<b>Type:</b> token + narrative\n"
+        f"<b>Token:</b> {escape(token)}\n"
+        f"<b>Narrative:</b> {escape(narrative)}\n"
+    )
+
+
+def _plain_components(alert: HypeAlert) -> str:
+    if alert.merged_signal is None:
+        return ""
+    components = _ordered_components(alert)
+    return (
+        "Components:\n"
+        + "".join(
+            f"- {item.name}: {item.hype_score:.2f}\n"
+            for item in components
+        )
+    )
+
+
+def _html_components(alert: HypeAlert) -> str:
+    if alert.merged_signal is None:
+        return ""
+    components = _ordered_components(alert)
+    return (
+        "<b>Components:</b>\n"
+        + "".join(
+            f"• {escape(item.name)}: {item.hype_score:.2f}\n"
+            for item in components
+        )
+    )
+
+
+def _ordered_components(alert: HypeAlert) -> list[HypeSignal]:
+    components = [alert.signal]
+    if alert.merged_signal is not None:
+        components.append(alert.merged_signal)
+    return sorted(components, key=lambda item: 0 if item.kind == "token" else 1)
 
 
 def format_summary(summary: NarrativeSummary) -> str:
@@ -372,11 +453,15 @@ def format_history_report(report: MomentumHistoryReport) -> str:
         return "Narrative Momentum History\n\nNo daily momentum snapshots available."
     sections = []
     for item in report.items:
-        previous = str(item.seven_days_ago) if item.seven_days_ago is not None else "N/A"
+        previous = (
+            str(item.seven_days_ago)
+            if item.seven_days_ago is not None
+            else "collecting history"
+        )
         change = (
             f"{item.change_percent:+.0f}%"
             if item.change_percent is not None
-            else "N/A"
+            else "collecting history"
         )
         sections.append(
             f"{item.name}\n"
@@ -392,11 +477,15 @@ def format_telegram_history_report(report: MomentumHistoryReport) -> str:
         return "<b>Narrative Momentum History</b>\n\nNo daily momentum snapshots available."
     sections = []
     for item in report.items:
-        previous = str(item.seven_days_ago) if item.seven_days_ago is not None else "N/A"
+        previous = (
+            str(item.seven_days_ago)
+            if item.seven_days_ago is not None
+            else "collecting history"
+        )
         change = (
             f"{item.change_percent:+.0f}%"
             if item.change_percent is not None
-            else "N/A"
+            else "collecting history"
         )
         sections.append(
             f"<b>{escape(item.name)}</b>\n"
@@ -415,7 +504,7 @@ def format_opportunity_report(report: OpportunityReport) -> str:
         growth = (
             f"{item.growth_percent:+.0f}%"
             if item.growth_percent is not None
-            else "N/A"
+            else "collecting history"
         )
         sections.append(
             f"{index}. {item.name}\n"
@@ -434,7 +523,7 @@ def format_telegram_opportunity_report(report: OpportunityReport) -> str:
         growth = (
             f"{item.growth_percent:+.0f}%"
             if item.growth_percent is not None
-            else "N/A"
+            else "collecting history"
         )
         sections.append(
             f"<b>{index}. {escape(item.name)}</b>\n"

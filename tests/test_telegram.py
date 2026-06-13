@@ -132,6 +132,35 @@ class TelegramAlertTests(unittest.TestCase):
         self.assertIn("Tokens: JUP, SOL", message)
         self.assertIn("Solana ecosystem 92", message)
 
+    def test_merged_alert_formatter_names_token_and_narrative(self) -> None:
+        merged_alert = HypeAlert(
+            signal=self.alert.signal,
+            merged_signal=HypeSignal(
+                kind="narrative",
+                name="Solana ecosystem",
+                mentions_count=4,
+                average_importance=9.0,
+                hype_score=36.0,
+            ),
+            insight=self.alert.insight,
+            top_posts=self.alert.top_posts,
+            related_tokens=self.alert.related_tokens,
+            related_narratives=self.alert.related_narratives,
+            momentum=self.alert.momentum,
+            merged_hype_score=27.0,
+        )
+
+        message = format_telegram_hype_alert(merged_alert)
+
+        self.assertIn("SOL &lt;script&gt; + Solana ecosystem", message)
+        self.assertIn("<b>Type:</b> token + narrative", message)
+        self.assertIn("<b>Narrative:</b> Solana ecosystem", message)
+        self.assertIn("<b>Hype Score:</b> 27.00", message)
+        self.assertIn("<b>Components:</b>", message)
+        self.assertIn("• SOL &lt;script&gt;: 36.00", message)
+        self.assertIn("• Solana ecosystem: 36.00", message)
+        self.assertNotIn("<b>Hype Score:</b> 72.00", message)
+
     def test_summary_formatters_include_rankings_and_escape_html(self) -> None:
         plain = format_summary(self.summary)
         html = format_telegram_summary(self.summary)
@@ -209,6 +238,41 @@ class TelegramAlertTests(unittest.TestCase):
         self.assertIn("Today: 92", plain)
         self.assertIn("Change: +188%", plain)
         self.assertIn("AI &lt;Agents&gt;", html)
+
+    def test_missing_growth_says_collecting_history(self) -> None:
+        history = MomentumHistoryReport(
+            items=[
+                MomentumHistoryItem(
+                    name="DePIN",
+                    seven_days_ago=None,
+                    today=55,
+                    change_percent=None,
+                )
+            ]
+        )
+        opportunities = OpportunityReport(
+            opportunities=[
+                NarrativeOpportunity(
+                    name="DePIN",
+                    momentum_score=55,
+                    growth_percent=None,
+                    recency_days=0.0,
+                    rank_score=51,
+                    status="Watchlist",
+                )
+            ]
+        )
+
+        self.assertIn("Change: collecting history", format_history_report(history))
+        self.assertIn("7d ago: collecting history", format_history_report(history))
+        self.assertIn(
+            "7d Growth: collecting history",
+            format_opportunity_report(opportunities),
+        )
+        self.assertIn(
+            "7d Growth: collecting history",
+            format_telegram_opportunity_report(opportunities),
+        )
 
     @patch("app.alerts.telegram.requests.post")
     def test_history_report_sender_uses_html_parse_mode(self, post) -> None:

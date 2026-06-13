@@ -175,10 +175,16 @@ python -m app.main --mode local --no-telegram
 
 ### RSS Mode
 
-RSS mode reads public feeds from `data/rss_feeds.json` and runs continuously using the configured polling interval:
+RSS mode reads public feeds from `data/rss_feeds.json`. By default it performs one fetch-and-analysis run, then exits:
 
 ```powershell
-python -m app.main --mode rss
+python -m app.main --mode rss --mock-ai
+```
+
+Run continuously using the configured 15-minute polling interval:
+
+```powershell
+python -m app.main --mode rss --mock-ai --watch
 ```
 
 RSS mode requires `OPENAI_API_KEY` unless mock AI is enabled.
@@ -342,7 +348,7 @@ Create a Task Scheduler task with:
 - Existing instance rule: **Do not start a new instance**
 - Setting: **Run task as soon as possible after a scheduled start is missed**
 
-RSS mode remains active and performs its own 15-minute polling loop.
+The RSS batch script includes `--watch`, so it remains active and performs its own 15-minute polling loop.
 
 ### Daily Digest
 
@@ -373,6 +379,8 @@ Tests cover:
 - SQLite is created automatically at `DATABASE_PATH`.
 - Existing posts are skipped using their stable source IDs.
 - Spike alerts are de-duplicated for the same signal within 60 minutes.
+- Token and narrative spikes sharing at least two-thirds of their top-post set are merged into one alert.
+- Merged spike hype is recalculated from all unique posts causing the paired signals; only the top three are displayed. This prevents token and narrative components from double-counting the same evidence.
 - Narrative score snapshots are stored after each processing run.
 - `--reset-db` clears analyses, alerts, and narrative history.
 - Individual post-analysis, feed, OpenAI, and Telegram errors are logged without silently failing.
