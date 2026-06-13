@@ -8,6 +8,7 @@ import requests
 from app.ai.analyzer import SpikeInsight
 from app.scoring.hype_score import HypeSignal
 from app.scoring.momentum_score import NarrativeMomentum
+from app.scoring.opportunity_score import NarrativeOpportunity
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,24 @@ class DailyDigest:
     momentum: list[NarrativeMomentum]
 
 
+@dataclass(frozen=True)
+class MomentumHistoryItem:
+    name: str
+    seven_days_ago: int | None
+    today: int
+    change_percent: float | None
+
+
+@dataclass(frozen=True)
+class MomentumHistoryReport:
+    items: list[MomentumHistoryItem]
+
+
+@dataclass(frozen=True)
+class OpportunityReport:
+    opportunities: list[NarrativeOpportunity]
+
+
 class TelegramAlerter:
     def __init__(self, bot_token: str, chat_id: str) -> None:
         self.bot_token = bot_token
@@ -116,6 +135,30 @@ class TelegramAlerter:
             json={
                 "chat_id": self.chat_id,
                 "text": format_telegram_daily_digest(digest),
+                "parse_mode": "HTML",
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+
+    def send_history_report(self, report: MomentumHistoryReport) -> None:
+        response = requests.post(
+            f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
+            json={
+                "chat_id": self.chat_id,
+                "text": format_telegram_history_report(report),
+                "parse_mode": "HTML",
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+
+    def send_opportunity_report(self, report: OpportunityReport) -> None:
+        response = requests.post(
+            f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
+            json={
+                "chat_id": self.chat_id,
+                "text": format_telegram_opportunity_report(report),
                 "parse_mode": "HTML",
             },
             timeout=30,
@@ -322,3 +365,81 @@ def format_telegram_daily_digest(digest: DailyDigest) -> str:
         f"<b>Narrative Momentum</b>\n{momentum or 'None'}\n\n"
         f"<b>Summary</b>\n{escape(digest.final_summary)}"
     )
+
+
+def format_history_report(report: MomentumHistoryReport) -> str:
+    if not report.items:
+        return "Narrative Momentum History\n\nNo daily momentum snapshots available."
+    sections = []
+    for item in report.items:
+        previous = str(item.seven_days_ago) if item.seven_days_ago is not None else "N/A"
+        change = (
+            f"{item.change_percent:+.0f}%"
+            if item.change_percent is not None
+            else "N/A"
+        )
+        sections.append(
+            f"{item.name}\n"
+            f"7d ago: {previous}\n"
+            f"Today: {item.today}\n"
+            f"Change: {change}"
+        )
+    return "Narrative Momentum History\n\n" + "\n\n".join(sections)
+
+
+def format_telegram_history_report(report: MomentumHistoryReport) -> str:
+    if not report.items:
+        return "<b>Narrative Momentum History</b>\n\nNo daily momentum snapshots available."
+    sections = []
+    for item in report.items:
+        previous = str(item.seven_days_ago) if item.seven_days_ago is not None else "N/A"
+        change = (
+            f"{item.change_percent:+.0f}%"
+            if item.change_percent is not None
+            else "N/A"
+        )
+        sections.append(
+            f"<b>{escape(item.name)}</b>\n"
+            f"7d ago: {previous}\n"
+            f"Today: {item.today}\n"
+            f"Change: {change}"
+        )
+    return "<b>Narrative Momentum History</b>\n\n" + "\n\n".join(sections)
+
+
+def format_opportunity_report(report: OpportunityReport) -> str:
+    if not report.opportunities:
+        return "🚀 Top Opportunities\n\nNo momentum history available."
+    sections = []
+    for index, item in enumerate(report.opportunities, start=1):
+        growth = (
+            f"{item.growth_percent:+.0f}%"
+            if item.growth_percent is not None
+            else "N/A"
+        )
+        sections.append(
+            f"{index}. {item.name}\n"
+            f"Momentum: {item.momentum_score}\n"
+            f"7d Growth: {growth}\n"
+            f"Status: {item.status}"
+        )
+    return "🚀 Top Opportunities\n\n" + "\n\n".join(sections)
+
+
+def format_telegram_opportunity_report(report: OpportunityReport) -> str:
+    if not report.opportunities:
+        return "🚀 <b>Top Opportunities</b>\n\nNo momentum history available."
+    sections = []
+    for index, item in enumerate(report.opportunities, start=1):
+        growth = (
+            f"{item.growth_percent:+.0f}%"
+            if item.growth_percent is not None
+            else "N/A"
+        )
+        sections.append(
+            f"<b>{index}. {escape(item.name)}</b>\n"
+            f"Momentum: {item.momentum_score}\n"
+            f"7d Growth: {growth}\n"
+            f"Status: {escape(item.status)}"
+        )
+    return "🚀 <b>Top Opportunities</b>\n\n" + "\n\n".join(sections)

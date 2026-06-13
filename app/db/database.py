@@ -52,6 +52,13 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_narrative_history_recorded_at
             ON narrative_score_history(recorded_at);
+
+            CREATE TABLE IF NOT EXISTS daily_momentum (
+                date TEXT NOT NULL,
+                narrative TEXT NOT NULL,
+                momentum_score INTEGER NOT NULL,
+                PRIMARY KEY (date, narrative)
+            );
             """
         )
         self.connection.commit()
@@ -60,6 +67,7 @@ class Database:
         self.connection.execute("DELETE FROM alerts")
         self.connection.execute("DELETE FROM analyzed_posts")
         self.connection.execute("DELETE FROM narrative_score_history")
+        self.connection.execute("DELETE FROM daily_momentum")
         self.connection.commit()
 
     def has_post(self, post_id: str) -> bool:
@@ -264,6 +272,71 @@ class Database:
               AND value IS NOT NULL
               AND TRIM(value) != ''
             GROUP BY value
+            """
+        ).fetchall()
+
+    def save_daily_momentum(self, scores) -> None:
+        values = [(item.name, item.score) for item in scores]
+        if not values:
+            return
+        self.connection.executemany(
+            """
+            INSERT INTO daily_momentum (date, narrative, momentum_score)
+            VALUES (date('now'), ?, ?)
+            ON CONFLICT(date, narrative)
+            DO UPDATE SET momentum_score = excluded.momentum_score
+            """,
+            values,
+        )
+        self.connection.commit()
+
+    def get_momentum_history_report(self, limit: int = 20) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT
+                today.narrative,
+                today.momentum_score AS today_score,
+                (
+                    SELECT previous.momentum_score
+                    FROM daily_momentum AS previous
+                    WHERE previous.narrative = today.narrative
+                      AND previous.date <= date('now', '-7 days')
+                    ORDER BY previous.date DESC
+                    LIMIT 1
+                ) AS seven_days_ago_score
+            FROM daily_momentum AS today
+            WHERE today.date = date('now')
+            ORDER BY today.momentum_score DESC, today.narrative
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    def get_opportunity_inputs(self) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            WITH latest_dates AS (
+                SELECT narrative, MAX(date) AS latest_date
+                FROM daily_momentum
+                GROUP BY narrative
+            )
+            SELECT
+                latest.narrative,
+                latest.momentum_score,
+                latest.date AS latest_date,
+                julianday('now') - julianday(latest.date) AS recency_days,
+                (
+                    SELECT previous.momentum_score
+                    FROM daily_momentum AS previous
+                    WHERE previous.narrative = latest.narrative
+                      AND previous.date <= date(latest.date, '-7 days')
+                    ORDER BY previous.date DESC
+                    LIMIT 1
+                ) AS seven_days_ago_score
+            FROM daily_momentum AS latest
+            JOIN latest_dates
+              ON latest.narrative = latest_dates.narrative
+             AND latest.date = latest_dates.latest_date
             """
         ).fetchall()
 

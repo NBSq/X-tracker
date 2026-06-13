@@ -5,6 +5,7 @@ from pathlib import Path
 
 from app.ai.analyzer import AnalysisResult
 from app.db.database import Database
+from app.scoring.momentum_score import NarrativeMomentum
 from app.sources.x_client import XPost
 
 
@@ -84,6 +85,43 @@ class NarrativeHistoryTests(unittest.TestCase):
         self.assertEqual(rows[0]["mentions_count"], 1)
         self.assertEqual(rows[0]["average_importance"], 8.0)
         self.assertLess(rows[0]["recency_hours"], 1.0)
+
+    def test_daily_momentum_upserts_today_and_reads_seven_day_history(self) -> None:
+        self.db.connection.execute(
+            """
+            INSERT INTO daily_momentum (date, narrative, momentum_score)
+            VALUES (date('now', '-7 days'), 'AI Agents', 32)
+            """
+        )
+        self.db.connection.commit()
+
+        self.db.save_daily_momentum([NarrativeMomentum(name="AI Agents", score=80)])
+        self.db.save_daily_momentum([NarrativeMomentum(name="AI Agents", score=92)])
+        rows = self.db.get_momentum_history_report()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["narrative"], "AI Agents")
+        self.assertEqual(rows[0]["seven_days_ago_score"], 32)
+        self.assertEqual(rows[0]["today_score"], 92)
+
+    def test_opportunity_inputs_use_latest_and_seven_day_scores(self) -> None:
+        self.db.connection.executemany(
+            """
+            INSERT INTO daily_momentum (date, narrative, momentum_score)
+            VALUES (date('now', ?), ?, ?)
+            """,
+            [
+                ("-8 days", "RWA", 44),
+                ("-1 day", "RWA", 61),
+            ],
+        )
+        self.db.connection.commit()
+
+        rows = self.db.get_opportunity_inputs()
+
+        self.assertEqual(rows[0]["narrative"], "RWA")
+        self.assertEqual(rows[0]["momentum_score"], 61)
+        self.assertEqual(rows[0]["seven_days_ago_score"], 44)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,9 @@ from app.alerts.telegram import (
     AlertPost,
     DailyDigest,
     HypeAlert,
+    MomentumHistoryItem,
+    MomentumHistoryReport,
+    OpportunityReport,
     NarrativeSummary,
     NarrativeGrowth,
     NarrativeTrend,
@@ -13,9 +16,13 @@ from app.alerts.telegram import (
     TelegramAlerter,
     TrendReport,
     format_hype_alert,
+    format_history_report,
+    format_opportunity_report,
     format_daily_digest,
     format_summary,
     format_telegram_hype_alert,
+    format_telegram_history_report,
+    format_telegram_opportunity_report,
     format_telegram_daily_digest,
     format_telegram_summary,
     format_telegram_trend_report,
@@ -23,6 +30,7 @@ from app.alerts.telegram import (
 )
 from app.scoring.hype_score import HypeSignal
 from app.scoring.momentum_score import NarrativeMomentum
+from app.scoring.opportunity_score import NarrativeOpportunity
 
 
 class TelegramAlertTests(unittest.TestCase):
@@ -83,6 +91,28 @@ class TelegramAlertTests(unittest.TestCase):
             important_posts=[AlertPost(username="alice", text="SOL is strong <today>")],
             final_summary="SOL and AI <Agents> led attention.",
             momentum=[NarrativeMomentum(name="AI <Agents>", score=92)],
+        )
+        self.history_report = MomentumHistoryReport(
+            items=[
+                MomentumHistoryItem(
+                    name="AI <Agents>",
+                    seven_days_ago=32,
+                    today=92,
+                    change_percent=187.5,
+                )
+            ]
+        )
+        self.opportunity_report = OpportunityReport(
+            opportunities=[
+                NarrativeOpportunity(
+                    name="AI <Agents>",
+                    momentum_score=92,
+                    growth_percent=187.0,
+                    recency_days=0.0,
+                    rank_score=98,
+                    status="Emerging",
+                )
+            ]
         )
 
     def test_html_formatter_escapes_dynamic_content(self) -> None:
@@ -170,6 +200,48 @@ class TelegramAlertTests(unittest.TestCase):
         request = post.call_args
         self.assertEqual(request.kwargs["json"]["parse_mode"], "HTML")
         self.assertIn("Crypto Daily Digest", request.kwargs["json"]["text"])
+
+    def test_history_report_formatters(self) -> None:
+        plain = format_history_report(self.history_report)
+        html = format_telegram_history_report(self.history_report)
+
+        self.assertIn("7d ago: 32", plain)
+        self.assertIn("Today: 92", plain)
+        self.assertIn("Change: +188%", plain)
+        self.assertIn("AI &lt;Agents&gt;", html)
+
+    @patch("app.alerts.telegram.requests.post")
+    def test_history_report_sender_uses_html_parse_mode(self, post) -> None:
+        post.return_value.raise_for_status.return_value = None
+
+        TelegramAlerter("test-token", "test-chat").send_history_report(
+            self.history_report
+        )
+
+        request = post.call_args
+        self.assertEqual(request.kwargs["json"]["parse_mode"], "HTML")
+        self.assertIn("Narrative Momentum History", request.kwargs["json"]["text"])
+
+    def test_opportunity_report_formatters(self) -> None:
+        plain = format_opportunity_report(self.opportunity_report)
+        html = format_telegram_opportunity_report(self.opportunity_report)
+
+        self.assertIn("Momentum: 92", plain)
+        self.assertIn("7d Growth: +187%", plain)
+        self.assertIn("Status: Emerging", plain)
+        self.assertIn("AI &lt;Agents&gt;", html)
+
+    @patch("app.alerts.telegram.requests.post")
+    def test_opportunity_report_sender_uses_html_parse_mode(self, post) -> None:
+        post.return_value.raise_for_status.return_value = None
+
+        TelegramAlerter("test-token", "test-chat").send_opportunity_report(
+            self.opportunity_report
+        )
+
+        request = post.call_args
+        self.assertEqual(request.kwargs["json"]["parse_mode"], "HTML")
+        self.assertIn("Top Opportunities", request.kwargs["json"]["text"])
 
 
 if __name__ == "__main__":

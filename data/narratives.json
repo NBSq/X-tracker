@@ -1,14 +1,18 @@
 {
   "narratives": [
-    "AI agents",
-    "Bitcoin L2",
-    "DePIN",
-    "Ethereum scaling",
-    "memecoins",
-    "modular blockchains",
-    "real world assets",
-    "restaking",
+    "Bitcoin / macro",
+    "Ethereum / L2",
     "Solana ecosystem",
-    "zero knowledge"
+    "AI agents",
+    "DePIN",
+    "RWA",
+    "Memecoins",
+    "Gaming",
+    "Stablecoins",
+    "ETFs",
+    "Regulation",
+    "Privacy",
+    "DeFi",
+    "Infrastructure"
   ]
 }

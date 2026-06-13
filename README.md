@@ -221,6 +221,18 @@ It detects common tokens and configured narrative aliases, then generates sentim
 
 Mock AI removes OpenAI dependency, but RSS and X modes still require network access to their respective sources.
 
+### Mock AI Limitations
+
+Mock AI is designed for fast, deterministic classification rather than language-level understanding:
+
+- It relies on keyword and ticker matches, so implied narratives without recognizable terms may be missed.
+- Ambiguous tickers such as `OP`, `TON`, `NEAR`, and `LINK` are detected when uppercase, prefixed with `$`, or referenced by project name to reduce false positives.
+- Sentiment and importance are lexical heuristics and do not understand sarcasm, source credibility, or market context.
+- Narrative mappings are intentionally broad. For example, macroeconomic terms map to `Bitcoin / macro` even when an article is not exclusively about Bitcoin.
+- OpenAI mode remains the better option for nuanced classification, summaries, and explanations.
+
+The canonical mock-AI taxonomy includes Bitcoin/macro, Ethereum/L2, Solana, AI agents, DePIN, RWA, memecoins, gaming, stablecoins, ETFs, regulation, privacy, DeFi, and infrastructure.
+
 ## Reports
 
 Generate a narrative trend report from stored history:
@@ -252,6 +264,22 @@ The digest includes:
 - Short closing summary
 
 Reports are sent to Telegram automatically when credentials are configured. Add `--no-telegram` for console-only output.
+
+Generate a seven-day Narrative Momentum comparison:
+
+```powershell
+python -m app.main --history-report
+```
+
+Every processing run upserts one momentum snapshot per narrative for the current UTC date in the `daily_momentum` SQLite table. The history report compares today's score with the latest available snapshot on or before seven days ago.
+
+Rank the strongest narrative opportunities from stored momentum history:
+
+```powershell
+python -m app.main --top-opportunities
+```
+
+Opportunity rankings combine latest momentum, seven-day growth, and snapshot recency. Results are classified as `Emerging`, `Growing`, or `Watchlist` and are sent to Telegram when configured.
 
 ## Telegram Examples
 

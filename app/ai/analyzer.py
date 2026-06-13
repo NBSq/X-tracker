@@ -203,36 +203,88 @@ class OpenAIAnalyzer:
 
 class LocalAnalyzer:
     TOKEN_ALIASES = {
-        "BTC": ("btc", "bitcoin"),
-        "ETH": ("eth", "ethereum"),
-        "SOL": ("sol", "solana"),
-        "LINK": ("link", "chainlink"),
-        "ONDO": ("ondo",),
-        "RNDR": ("rndr", "render"),
-        "TAO": ("tao", "bittensor"),
-        "DOGE": ("doge", "dogecoin"),
-        "PEPE": ("pepe",),
-        "ARB": ("arb", "arbitrum"),
-        "XRP": ("xrp", "ripple"),
-        "ADA": ("ada", "cardano"),
-        "AVAX": ("avax", "avalanche"),
-        "BNB": ("bnb",),
-        "SUI": ("sui",),
-        "JUP": ("jup", "jupiter"),
-        "AAVE": ("aave",),
-        "UNI": ("uni", "uniswap"),
+        "BTC": ("bitcoin",),
+        "ETH": ("ethereum", "ether"),
+        "SOL": ("solana",),
+        "BNB": ("binance coin",),
+        "XRP": ("ripple",),
+        "DOGE": ("dogecoin",),
+        "ADA": ("cardano",),
+        "AVAX": ("avalanche",),
+        "LINK": ("chainlink",),
+        "TON": ("the open network", "toncoin"),
+        "ARB": ("arbitrum",),
+        "OP": ("optimism",),
+        "SUI": (),
+        "APT": ("aptos",),
+        "INJ": ("injective",),
+        "SEI": (),
+        "TAO": ("bittensor",),
+        "FET": ("fetch.ai", "fetch ai"),
+        "RNDR": ("render",),
+        "NEAR": ("near protocol",),
+        "TIA": ("celestia",),
+        "JUP": ("jupiter",),
+        "WIF": ("dogwifhat",),
+        "PEPE": (),
+        "BONK": (),
     }
-    NARRATIVE_ALIASES = {
-        "ai agents": ("ai agents", "artificial intelligence", "crypto ai"),
-        "bitcoin l2": ("bitcoin l2", "bitcoin layer 2", "btc layer 2"),
-        "depin": ("depin", "decentralized physical infrastructure"),
-        "ethereum scaling": ("ethereum scaling", "ethereum layer 2", "eth scaling"),
-        "memecoins": ("memecoins", "memecoin", "meme coin"),
-        "modular blockchains": ("modular blockchains", "modular blockchain"),
-        "real world assets": ("real world assets", "rwa", "tokenization"),
-        "restaking": ("restaking", "re-staking"),
-        "solana ecosystem": ("solana ecosystem", "solana"),
-        "zero knowledge": ("zero knowledge", "zk proof", "zk rollup"),
+    LOWERCASE_TICKERS = {
+        "btc", "eth", "sol", "bnb", "xrp", "doge", "ada", "avax",
+        "arb", "sui", "apt", "inj", "tao", "fet", "rndr", "tia", "jup",
+        "wif", "pepe", "bonk",
+    }
+    NARRATIVE_KEYWORDS = {
+        "Bitcoin / macro": (
+            "bitcoin", "btc", "fed", "rates", "interest rate", "macro", "oil",
+            "stocks", "risk assets", "risk asset", "inflation", "liquidity",
+        ),
+        "Ethereum / L2": (
+            "ethereum", "eth", "layer 2", "l2", "rollup", "arbitrum",
+            "optimism", "base chain", "zk rollup",
+        ),
+        "Solana ecosystem": (
+            "solana", "sol", "jupiter", "jup", "bonk", "wif",
+        ),
+        "AI agents": (
+            "ai", "artificial intelligence", "agent", "agents", "bittensor",
+            "tao", "fetch.ai", "fet", "render", "rndr",
+        ),
+        "DePIN": (
+            "depin", "decentralized physical infrastructure", "physical infrastructure",
+        ),
+        "RWA": (
+            "real world assets", "real-world assets", "tokenized", "tokenization",
+            "treasury", "treasuries", "rwa",
+        ),
+        "Memecoins": (
+            "memecoin", "memecoins", "meme coin", "meme coins", "doge",
+            "dogecoin", "pepe", "bonk", "wif", "dogwifhat",
+        ),
+        "Gaming": (
+            "gaming", "gamefi", "blockchain game", "web3 game", "play to earn",
+        ),
+        "Stablecoins": (
+            "stablecoin", "stablecoins", "usdt", "usdc", "tether", "circle",
+        ),
+        "ETFs": (
+            "etf", "etfs", "blackrock", "spot bitcoin etf", "spot ether etf",
+        ),
+        "Regulation": (
+            "sec", "regulation", "regulator", "lawsuit", "mica", "compliance",
+        ),
+        "Privacy": (
+            "privacy", "private transaction", "zero knowledge", "zk proof",
+            "monero", "zcash",
+        ),
+        "DeFi": (
+            "defi", "decentralized finance", "dex", "lending protocol",
+            "liquidity pool", "yield farming", "uniswap", "aave",
+        ),
+        "Infrastructure": (
+            "infrastructure", "oracle", "chainlink", "validator", "rpc",
+            "modular blockchain", "data availability", "interoperability",
+        ),
     }
     BULLISH_WORDS = {
         "bullish", "breakout", "buy", "growth", "rally", "strong", "surge",
@@ -249,19 +301,30 @@ class LocalAnalyzer:
     def analyze_post(self, text: str) -> AnalysisResult:
         normalized = text.lower()
         words = set(re.findall(r"[a-z0-9]+", normalized))
-        tokens = [
-            token
-            for token, aliases in self.TOKEN_ALIASES.items()
-            if any(alias.lower() in words for alias in aliases)
+        tokens = []
+        for token, aliases in self.TOKEN_ALIASES.items():
+            ticker_match = bool(re.search(rf"(?<![A-Z0-9])\$?{token}(?![A-Z0-9])", text))
+            lowercase_match = token.lower() in self.LOWERCASE_TICKERS and token.lower() in words
+            alias_match = any(self._contains_keyword(normalized, alias) for alias in aliases)
+            if ticker_match or lowercase_match or alias_match:
+                tokens.append(token)
+
+        narratives = [
+            narrative
+            for narrative, keywords in self.NARRATIVE_KEYWORDS.items()
+            if any(self._contains_keyword(normalized, keyword) for keyword in keywords)
         ]
-        narratives = []
         for narrative in self.known_narratives:
-            aliases = self.NARRATIVE_ALIASES.get(
-                narrative.lower(),
-                (narrative.lower(),),
-            )
-            if any(alias in normalized for alias in aliases):
-                narratives.append(narrative)
+            canonical = self._canonical_narrative(narrative)
+            if self._contains_keyword(normalized, narrative) and canonical not in narratives:
+                narratives.append(canonical)
+
+        if "BTC" in tokens and (
+            "ETFs" in narratives or "Bitcoin / macro" in narratives
+        ) and "Bitcoin / macro" not in narratives:
+            narratives.append("Bitcoin / macro")
+
+        narratives = list(dict.fromkeys(narratives))
 
         bullish_hits = len(words & self.BULLISH_WORDS)
         bearish_hits = len(words & self.BEARISH_WORDS)
@@ -280,6 +343,26 @@ class LocalAnalyzer:
             importance=importance,
             summary=text.strip()[:180],
         )
+
+    @staticmethod
+    def _contains_keyword(normalized_text: str, keyword: str) -> bool:
+        pattern = rf"(?<![a-z0-9]){re.escape(keyword.lower())}(?![a-z0-9])"
+        return bool(re.search(pattern, normalized_text))
+
+    @staticmethod
+    def _canonical_narrative(narrative: str) -> str:
+        aliases = {
+            "real world assets": "RWA",
+            "ethereum scaling": "Ethereum / L2",
+            "memecoins": "Memecoins",
+            "solana ecosystem": "Solana ecosystem",
+            "ai agents": "AI agents",
+            "depin": "DePIN",
+            "zero knowledge": "Privacy",
+            "modular blockchains": "Infrastructure",
+            "bitcoin l2": "Bitcoin / macro",
+        }
+        return aliases.get(narrative.strip().lower(), narrative.strip())
 
     def explain_spike(
         self,

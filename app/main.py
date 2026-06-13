@@ -12,6 +12,9 @@ from app.alerts.telegram import (
     AlertPost,
     DailyDigest,
     HypeAlert,
+    MomentumHistoryItem,
+    MomentumHistoryReport,
+    OpportunityReport,
     NarrativeSummary,
     NarrativeGrowth,
     NarrativeTrend,
@@ -19,6 +22,8 @@ from app.alerts.telegram import (
     TelegramAlerter,
     TrendReport,
     format_hype_alert,
+    format_history_report,
+    format_opportunity_report,
     format_daily_digest,
     format_summary,
     format_trend_report,
@@ -27,6 +32,7 @@ from app.config import Config, load_config
 from app.db.database import Database
 from app.scoring.hype_score import build_hype_signal
 from app.scoring.momentum_score import NarrativeMomentum, calculate_momentum_score
+from app.scoring.opportunity_score import build_opportunity
 from app.sources.local_client import load_sample_posts
 from app.sources.rss_client import RSSClient, load_rss_feeds
 from app.sources.x_client import XClient, XPost
@@ -93,6 +99,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print a 24-hour digest and optionally send it to Telegram",
     )
+    parser.add_argument(
+        "--history-report",
+        action="store_true",
+        help="Compare today's narrative momentum with snapshots from seven days ago",
+    )
+    parser.add_argument(
+        "--top-opportunities",
+        action="store_true",
+        help="Rank narrative opportunities from stored momentum history",
+    )
     return parser.parse_args()
 
 
@@ -141,6 +157,7 @@ def evaluate_hype(
     analyzer: Analyzer,
 ) -> None:
     momentum_scores = build_momentum_scores(db)
+    db.save_daily_momentum(momentum_scores)
     for row in db.get_recent_signal_stats():
         signal = build_hype_signal(row)
         logger.info(
@@ -392,6 +409,86 @@ def print_and_send_daily_digest(
             logger.exception("Telegram daily digest failed")
 
 
+def build_history_report(db: Database) -> MomentumHistoryReport:
+    items = []
+    for row in db.get_momentum_history_report():
+        today = int(row["today_score"])
+        previous = row["seven_days_ago_score"]
+        previous_score = int(previous) if previous is not None else None
+        if previous_score is None:
+            change_percent = None
+        elif previous_score > 0:
+            change_percent = ((today - previous_score) / previous_score) * 100.0
+        elif today > 0:
+            change_percent = 100.0
+        else:
+            change_percent = 0.0
+        items.append(
+            MomentumHistoryItem(
+                name=str(row["narrative"]),
+                seven_days_ago=previous_score,
+                today=today,
+                change_percent=change_percent,
+            )
+        )
+    return MomentumHistoryReport(items=items)
+
+
+def print_and_send_history_report(
+    db: Database,
+    telegram: TelegramAlerter | None,
+) -> None:
+    db.save_daily_momentum(build_momentum_scores(db))
+    report = build_history_report(db)
+    logger.info("\n%s", format_history_report(report))
+    if telegram:
+        try:
+            telegram.send_history_report(report)
+            logger.info("Telegram history report sent")
+        except Exception:
+            logger.exception("Telegram history report failed")
+
+
+def build_opportunity_report(db: Database, limit: int = 10) -> OpportunityReport:
+    opportunities = []
+    for row in db.get_opportunity_inputs():
+        momentum_score = int(row["momentum_score"])
+        previous = row["seven_days_ago_score"]
+        if previous is None:
+            growth_percent = None
+        elif int(previous) > 0:
+            growth_percent = ((momentum_score - int(previous)) / int(previous)) * 100.0
+        elif momentum_score > 0:
+            growth_percent = 100.0
+        else:
+            growth_percent = 0.0
+        opportunities.append(
+            build_opportunity(
+                name=str(row["narrative"]),
+                momentum_score=momentum_score,
+                growth_percent=growth_percent,
+                recency_days=float(row["recency_days"] or 0.0),
+            )
+        )
+    opportunities.sort(key=lambda item: item.rank_score, reverse=True)
+    return OpportunityReport(opportunities=opportunities[:limit])
+
+
+def print_and_send_opportunity_report(
+    db: Database,
+    telegram: TelegramAlerter | None,
+) -> None:
+    db.save_daily_momentum(build_momentum_scores(db))
+    report = build_opportunity_report(db)
+    logger.info("\n%s", format_opportunity_report(report))
+    if telegram:
+        try:
+            telegram.send_opportunity_report(report)
+            logger.info("Telegram opportunity report sent")
+        except Exception:
+            logger.exception("Telegram opportunity report failed")
+
+
 def run_local(
     config: Config,
     db: Database,
@@ -519,7 +616,11 @@ def main() -> None:
         raise SystemExit(1)
 
     try:
-        if args.daily_digest:
+        if args.top_opportunities:
+            print_and_send_opportunity_report(db, build_telegram(config, args.no_telegram))
+        elif args.history_report:
+            print_and_send_history_report(db, build_telegram(config, args.no_telegram))
+        elif args.daily_digest:
             print_and_send_daily_digest(db, build_telegram(config, args.no_telegram))
         elif args.trend_report:
             print_and_send_trend_report(db, build_telegram(config, args.no_telegram))
