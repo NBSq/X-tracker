@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from math import exp
 
 
 @dataclass(frozen=True)
@@ -9,6 +10,14 @@ class HypeSignal:
     average_importance: float
     hype_score: float
 
+    @property
+    def display_hype_score(self) -> int:
+        return normalize_hype_score(self.hype_score)
+
+    @property
+    def hype_label(self) -> str:
+        return interpret_display_hype_score(self.display_hype_score)
+
 
 @dataclass(frozen=True)
 class HypeCandidate:
@@ -18,6 +27,23 @@ class HypeCandidate:
 
 def calculate_hype_score(mentions_count: int, average_importance: float) -> float:
     return mentions_count * average_importance
+
+
+def normalize_hype_score(raw_hype_score: float) -> int:
+    score = round(100 * (1 - exp(-max(raw_hype_score, 0.0) / 45)))
+    return max(0, min(100, score))
+
+
+def interpret_display_hype_score(display_hype_score: int) -> str:
+    if display_hype_score <= 20:
+        return "Low"
+    if display_hype_score <= 40:
+        return "Moderate"
+    if display_hype_score <= 60:
+        return "Strong"
+    if display_hype_score <= 80:
+        return "High"
+    return "Extreme"
 
 
 def build_hype_signal(row) -> HypeSignal:

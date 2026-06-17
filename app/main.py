@@ -35,6 +35,7 @@ from app.scoring.hype_score import (
     HypeCandidate,
     build_hype_signal,
     candidate_overlap,
+    normalize_hype_score,
     should_merge_candidates,
 )
 from app.scoring.momentum_score import NarrativeMomentum, calculate_momentum_score
@@ -179,7 +180,14 @@ def evaluate_hype(
     for row in db.get_recent_signal_stats():
         signal = build_hype_signal(row)
         logger.info(
-            "Hype score | %s:%s | %.2f (%d mentions, %.2f avg importance)",
+            "Hype score | %s:%s | %d/100 %s",
+            signal.kind,
+            signal.name,
+            signal.display_hype_score,
+            signal.hype_label,
+        )
+        logger.debug(
+            "Raw hype score | %s:%s | %.2f (%d mentions, %.2f avg importance)",
             signal.kind,
             signal.name,
             signal.hype_score,
@@ -284,11 +292,12 @@ def send_candidate_alert(
         f"{signal.name} + {merged_signal.name}" if merged_signal else signal.name
     )
     combined_hype = merged_hype_score if merged_hype_score is not None else signal.hype_score
+    display_hype_for_explanation = normalize_hype_score(combined_hype)
     try:
         insight = analyzer.explain_spike(
             combined_kind,
             combined_name,
-            combined_hype,
+            display_hype_for_explanation,
             post_prompts,
             related_tokens,
             related_narratives,
@@ -298,7 +307,7 @@ def send_candidate_alert(
         insight = LocalAnalyzer([]).explain_spike(
             combined_kind,
             combined_name,
-            combined_hype,
+            display_hype_for_explanation,
             post_prompts,
             related_tokens,
             related_narratives,

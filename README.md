@@ -68,6 +68,25 @@ flowchart LR
 hype score = mentions count * average importance
 ```
 
+The raw hype score remains internal and is only emitted in debug logs. User-facing reports show a normalized display score from `0-100`.
+
+Example:
+
+```text
+raw score = 116
+display score = 92/100
+```
+
+Display score interpretation:
+
+| Score | Meaning |
+| --- | --- |
+| 0-20 | Low |
+| 21-40 | Moderate |
+| 41-60 | Strong |
+| 61-80 | High |
+| 81-100 | Extreme |
+
 ### Narrative Momentum
 
 Narrative Momentum is a bounded `0-100` heuristic combining:
@@ -295,7 +314,7 @@ Opportunity rankings combine latest momentum, seven-day growth, and snapshot rec
 Crypto Hype Spike
 
 Token/Narrative: SOL
-Hype Score: 36.00
+Hype Score: 92/100
 Confidence: 8/10
 Action: research
 
@@ -315,7 +334,7 @@ Solana ecosystem 92
 Crypto Daily Digest
 
 Top 5 tokens last 24h
-1. SOL - hype score 36.00
+1. SOL - hype score 92/100
 
 Fastest growing narrative
 AI Agents +42%

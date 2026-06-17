@@ -148,7 +148,7 @@ class OpenAIAnalyzer:
                 {
                     "role": "user",
                     "content": (
-                        f"Signal: {kind} {name}\nHype score: {hype_score:.2f}\n"
+                        f"Signal: {kind} {name}\nDisplay hype score: {hype_score:.0f}/100\n"
                         f"Related tokens: {', '.join(related_tokens)}\n"
                         f"Related narratives: {', '.join(related_narratives)}\n"
                         f"Top posts:\n" + "\n".join(top_posts)
@@ -382,7 +382,7 @@ class LocalAnalyzer:
             action = "ignore"
         explanation = (
             f"{name} is appearing across {len(top_posts)} high-importance posts, "
-            f"pushing its {kind} hype score to {hype_score:.2f}. "
+            f"pushing its {kind} hype score to {hype_score:.0f}/100. "
             "The clustered attention may signal a developing market narrative."
         )
         return SpikeInsight(explanation=explanation, action=action, confidence=confidence)

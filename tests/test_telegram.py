@@ -155,17 +155,17 @@ class TelegramAlertTests(unittest.TestCase):
         self.assertIn("SOL &lt;script&gt; + Solana ecosystem", message)
         self.assertIn("<b>Type:</b> token + narrative", message)
         self.assertIn("<b>Narrative:</b> Solana ecosystem", message)
-        self.assertIn("<b>Hype Score:</b> 27.00", message)
+        self.assertIn("<b>Hype Score:</b> 45/100", message)
         self.assertIn("<b>Components:</b>", message)
-        self.assertIn("• SOL &lt;script&gt;: 36.00", message)
-        self.assertIn("• Solana ecosystem: 36.00", message)
-        self.assertNotIn("<b>Hype Score:</b> 72.00", message)
+        self.assertIn("• SOL &lt;script&gt;: 55/100", message)
+        self.assertIn("• Solana ecosystem: 55/100", message)
+        self.assertNotIn("<b>Hype Score:</b> 80/100", message)
 
     def test_summary_formatters_include_rankings_and_escape_html(self) -> None:
         plain = format_summary(self.summary)
         html = format_telegram_summary(self.summary)
 
-        self.assertIn("1. SOL <script> — hype score 36.00", plain)
+        self.assertIn("1. SOL <script> — hype score 55/100", plain)
         self.assertIn("1. AI Agents", plain)
         self.assertIn("SOL &lt;script&gt;", html)
         self.assertIn("SOL is strong &lt;today&gt;", html)

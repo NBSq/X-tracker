@@ -7,6 +7,7 @@ import requests
 
 from app.ai.analyzer import SpikeInsight
 from app.scoring.hype_score import HypeSignal
+from app.scoring.hype_score import normalize_hype_score
 from app.scoring.momentum_score import NarrativeMomentum
 from app.scoring.opportunity_score import NarrativeOpportunity
 
@@ -177,7 +178,7 @@ def format_hype_alert(alert: HypeAlert) -> str:
     return (
         f"🚨 Crypto Hype Spike: {_alert_title(alert)}\n\n"
         f"{_plain_signal_fields(alert)}"
-        f"Hype Score: {_combined_hype_score(alert):.2f}\n"
+        f"Hype Score: {_combined_display_hype_score(alert)}/100\n"
         f"{_plain_components(alert)}"
         f"Confidence: {alert.insight.confidence}/10\n"
         f"Action: {alert.insight.action}\n\n"
@@ -203,7 +204,7 @@ def format_telegram_hype_alert(alert: HypeAlert) -> str:
     return (
         f"🚨 <b>Crypto Hype Spike: {escape(_alert_title(alert))}</b>\n\n"
         f"{_html_signal_fields(alert)}"
-        f"<b>Hype Score:</b> {_combined_hype_score(alert):.2f}\n"
+        f"<b>Hype Score:</b> {_combined_display_hype_score(alert)}/100\n"
         f"{_html_components(alert)}"
         f"<b>Confidence:</b> {alert.insight.confidence}/10\n"
         f"<b>Action:</b> {escape(alert.insight.action)}\n\n"
@@ -222,6 +223,10 @@ def _combined_hype_score(alert: HypeAlert) -> float:
     if alert.merged_hype_score is not None:
         return alert.merged_hype_score
     return max(alert.signal.hype_score, alert.merged_signal.hype_score)
+
+
+def _combined_display_hype_score(alert: HypeAlert) -> int:
+    return normalize_hype_score(_combined_hype_score(alert))
 
 
 def _alert_title(alert: HypeAlert) -> str:
@@ -269,7 +274,7 @@ def _plain_components(alert: HypeAlert) -> str:
     return (
         "Components:\n"
         + "".join(
-            f"- {item.name}: {item.hype_score:.2f}\n"
+            f"- {item.name}: {item.display_hype_score}/100\n"
             for item in components
         )
     )
@@ -282,7 +287,7 @@ def _html_components(alert: HypeAlert) -> str:
     return (
         "<b>Components:</b>\n"
         + "".join(
-            f"• {escape(item.name)}: {item.hype_score:.2f}\n"
+            f"• {escape(item.name)}: {item.display_hype_score}/100\n"
             for item in components
         )
     )
@@ -297,7 +302,7 @@ def _ordered_components(alert: HypeAlert) -> list[HypeSignal]:
 
 def format_summary(summary: NarrativeSummary) -> str:
     tokens = "\n".join(
-        f"{index}. {item.name} — hype score {item.hype_score:.2f}"
+        f"{index}. {item.name} — hype score {normalize_hype_score(item.hype_score)}/100"
         for index, item in enumerate(summary.top_tokens, start=1)
     )
     narratives = "\n".join(
@@ -318,7 +323,7 @@ def format_summary(summary: NarrativeSummary) -> str:
 
 def format_telegram_summary(summary: NarrativeSummary) -> str:
     tokens = "\n".join(
-        f"{index}. {escape(item.name)} — hype score {item.hype_score:.2f}"
+        f"{index}. {escape(item.name)} — hype score {normalize_hype_score(item.hype_score)}/100"
         for index, item in enumerate(summary.top_tokens, start=1)
     )
     narratives = "\n".join(
@@ -339,11 +344,11 @@ def format_telegram_summary(summary: NarrativeSummary) -> str:
 
 def format_trend_report(report: TrendReport) -> str:
     top_24h = "\n".join(
-        f"{index}. {item.name} — {item.score:.2f}"
+        f"{index}. {item.name} — {normalize_hype_score(item.score)}/100"
         for index, item in enumerate(report.top_24h, start=1)
     )
     top_7d = "\n".join(
-        f"{index}. {item.name} — {item.score:.2f}"
+        f"{index}. {item.name} — {normalize_hype_score(item.score)}/100"
         for index, item in enumerate(report.top_7d, start=1)
     )
     growing = "\n".join(
@@ -362,11 +367,11 @@ def format_trend_report(report: TrendReport) -> str:
 
 def format_telegram_trend_report(report: TrendReport) -> str:
     top_24h = "\n".join(
-        f"{index}. {escape(item.name)} — {item.score:.2f}"
+        f"{index}. {escape(item.name)} — {normalize_hype_score(item.score)}/100"
         for index, item in enumerate(report.top_24h, start=1)
     )
     top_7d = "\n".join(
-        f"{index}. {escape(item.name)} — {item.score:.2f}"
+        f"{index}. {escape(item.name)} — {normalize_hype_score(item.score)}/100"
         for index, item in enumerate(report.top_7d, start=1)
     )
     growing = "\n".join(
@@ -387,11 +392,11 @@ def format_telegram_trend_report(report: TrendReport) -> str:
 
 def format_daily_digest(digest: DailyDigest) -> str:
     tokens = "\n".join(
-        f"{index}. {item.name} — hype score {item.hype_score:.2f}"
+        f"{index}. {item.name} — hype score {normalize_hype_score(item.hype_score)}/100"
         for index, item in enumerate(digest.top_tokens, start=1)
     )
     narratives = "\n".join(
-        f"{index}. {item.name} — hype score {item.hype_score:.2f}"
+        f"{index}. {item.name} — hype score {normalize_hype_score(item.hype_score)}/100"
         for index, item in enumerate(digest.top_narratives, start=1)
     )
     growing = (
@@ -417,11 +422,11 @@ def format_daily_digest(digest: DailyDigest) -> str:
 
 def format_telegram_daily_digest(digest: DailyDigest) -> str:
     tokens = "\n".join(
-        f"{index}. {escape(item.name)} — hype score {item.hype_score:.2f}"
+        f"{index}. {escape(item.name)} — hype score {normalize_hype_score(item.hype_score)}/100"
         for index, item in enumerate(digest.top_tokens, start=1)
     )
     narratives = "\n".join(
-        f"{index}. {escape(item.name)} — hype score {item.hype_score:.2f}"
+        f"{index}. {escape(item.name)} — hype score {normalize_hype_score(item.hype_score)}/100"
         for index, item in enumerate(digest.top_narratives, start=1)
     )
     growing = (
