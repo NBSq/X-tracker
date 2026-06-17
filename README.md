@@ -393,6 +393,24 @@ Tests cover:
 - Narrative Momentum scoring
 - Telegram formatting, HTML escaping, and payloads
 
+## Contributing
+
+Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for setup, test, issue, and pull request guidance.
+
+Good first areas include:
+
+- Improving mock AI keyword coverage
+- Adding RSS feed fixtures
+- Refining scoring and report output
+- Expanding Telegram formatting tests
+- Improving docs and screenshots
+
+Please run tests before opening a PR:
+
+```powershell
+pytest
+```
+
 ## Data and Operations
 
 - SQLite is created automatically at `DATABASE_PATH`.
@@ -420,3 +438,7 @@ Tests cover:
 ## Disclaimer
 
 This project is an experimental monitoring and research tool. Scores, summaries, and suggested actions are heuristic outputs and are not financial advice.
+
+## License
+
+Released under the [MIT License](LICENSE).
