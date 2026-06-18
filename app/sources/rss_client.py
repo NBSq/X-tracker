@@ -142,10 +142,16 @@ def _stable_article_id(identifier: str) -> str:
 def _article_text(title: str, description: str) -> str:
     clean_title = _clean_text(title)
     clean_description = _clean_text(description)
-    return f"{clean_title}. {clean_description}".strip(" .")[:5000]
+    if clean_title and clean_description:
+        return f"{clean_title}. {clean_description}"[:5000]
+    return (clean_title or clean_description)[:5000]
 
 
 def _clean_text(value: str) -> str:
     parser = _TextExtractor()
     parser.feed(unescape(value or ""))
-    return " ".join(parser.parts)
+    text = " ".join(parser.parts)
+    stripped_source = (value or "").strip()
+    if text and stripped_source.endswith((".", "!", "?")) and not text.endswith((".", "!", "?")):
+        return f"{text}{stripped_source[-1]}"
+    return text

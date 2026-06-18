@@ -266,7 +266,7 @@ def send_candidate_alert(
         average_importance = sum(
             float(item["importance"]) for item in context_rows
         ) / unique_mentions_count
-        merged_hype_score = unique_mentions_count * average_importance
+        merged_hype_score = round(unique_mentions_count * average_importance, 2)
     context_rows = context_rows[:3]
     top_posts = [
         AlertPost(username=str(item["username"]), text=str(item["text"]))

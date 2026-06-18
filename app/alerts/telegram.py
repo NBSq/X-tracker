@@ -176,7 +176,8 @@ def format_hype_alert(alert: HypeAlert) -> str:
     )
     momentum = "\n".join(f"{item.name} {item.score}" for item in alert.momentum)
     return (
-        f"🚨 Crypto Hype Spike: {_alert_title(alert)}\n\n"
+        "🚨 Crypto Hype Spike\n"
+        f"Signal: {_alert_title(alert)}\n\n"
         f"{_plain_signal_fields(alert)}"
         f"Hype Score: {_combined_display_hype_score(alert)}/100\n"
         f"{_plain_components(alert)}"
@@ -202,7 +203,8 @@ def format_telegram_hype_alert(alert: HypeAlert) -> str:
         f"{escape(item.name)} {item.score}" for item in alert.momentum
     )
     return (
-        f"🚨 <b>Crypto Hype Spike: {escape(_alert_title(alert))}</b>\n\n"
+        "🚨 <b>Crypto Hype Spike</b>\n"
+        f"<b>Signal:</b> {escape(_alert_title(alert))}\n\n"
         f"{_html_signal_fields(alert)}"
         f"<b>Hype Score:</b> {_combined_display_hype_score(alert)}/100\n"
         f"{_html_components(alert)}"
