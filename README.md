@@ -306,6 +306,14 @@ python -m app.main --top-opportunities
 
 Opportunity rankings combine latest momentum, seven-day growth, and snapshot recency. Results are classified as `Emerging`, `Growing`, or `Watchlist` and are sent to Telegram when configured.
 
+Generate signal performance metrics from saved alerts:
+
+```powershell
+python -m app.main --performance-report
+```
+
+Every generated alert is saved in the `signal_history` SQLite table with signal type, token, narrative, display hype score, momentum score, confidence, and action. Until price/outcome tracking is added, `Successful` and `Accuracy` use a proxy definition: signals with action `watch` or `research` and confidence of at least `7/10` count as successful.
+
 ## Telegram Examples
 
 ### Hype Spike
@@ -419,7 +427,8 @@ pytest
 - Token and narrative spikes sharing at least two-thirds of their top-post set are merged into one alert.
 - Merged spike hype is recalculated from all unique posts causing the paired signals; only the top three are displayed. This prevents token and narrative components from double-counting the same evidence.
 - Narrative score snapshots are stored after each processing run.
-- `--reset-db` clears analyses, alerts, and narrative history.
+- Generated alerts are stored in `signal_history` for performance reporting.
+- `--reset-db` clears analyses, alerts, narrative history, momentum snapshots, and signal history.
 - Individual post-analysis, feed, OpenAI, and Telegram errors are logged without silently failing.
 
 ## Roadmap

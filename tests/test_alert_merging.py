@@ -2,7 +2,12 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from app.main import EnrichedCandidate, merge_alert_candidates, send_candidate_alert
+from app.main import (
+    EnrichedCandidate,
+    build_signal_history_record,
+    merge_alert_candidates,
+    send_candidate_alert,
+)
 from app.scoring.momentum_score import NarrativeMomentum
 from app.scoring.hype_score import HypeCandidate, HypeSignal, should_merge_candidates
 
@@ -139,6 +144,40 @@ class AlertMergingTests(unittest.TestCase):
 
         alert = telegram.send_hype_alert.call_args.args[0]
         self.assertEqual(alert.merged_hype_score, 98.0)
+
+    def test_signal_history_record_for_merged_alert(self) -> None:
+        rows = [
+            {
+                "post_id": "1",
+                "username": "analyst",
+                "text": "Post 1",
+                "tokens_json": '["BTC"]',
+                "narratives_json": '["Bitcoin / macro"]',
+                "importance": 9,
+            }
+        ]
+        token = make_candidate("token", "BTC", {"1"})
+        narrative = make_candidate("narrative", "Bitcoin / macro", {"1"})
+        token = EnrichedCandidate(candidate=token.candidate, rows=rows)
+        narrative = EnrichedCandidate(candidate=narrative.candidate, rows=rows)
+        analyzer = Mock()
+        analyzer.explain_spike.return_value = SimpleNamespace(
+            explanation="Shared posts",
+            action="research",
+            confidence=8,
+        )
+        telegram = Mock()
+        database = Mock()
+
+        send_candidate_alert(token, narrative, [], analyzer, telegram, database)
+
+        alert = telegram.send_hype_alert.call_args.args[0]
+        record = build_signal_history_record(alert)
+        self.assertEqual(record["signal_type"], "token + narrative")
+        self.assertEqual(record["token"], "BTC")
+        self.assertEqual(record["narrative"], "Bitcoin / macro")
+        self.assertEqual(record["confidence"], 8)
+        database.save_signal_history.assert_called_once()
 
 
 if __name__ == "__main__":

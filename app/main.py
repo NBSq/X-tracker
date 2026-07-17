@@ -16,6 +16,8 @@ from app.alerts.telegram import (
     MomentumHistoryItem,
     MomentumHistoryReport,
     OpportunityReport,
+    PerformanceNarrative,
+    SignalPerformanceReport,
     NarrativeSummary,
     NarrativeGrowth,
     NarrativeTrend,
@@ -25,6 +27,7 @@ from app.alerts.telegram import (
     format_hype_alert,
     format_history_report,
     format_opportunity_report,
+    format_performance_report,
     format_daily_digest,
     format_summary,
     format_trend_report,
@@ -121,6 +124,11 @@ def parse_args() -> argparse.Namespace:
         "--top-opportunities",
         action="store_true",
         help="Rank narrative opportunities from stored momentum history",
+    )
+    parser.add_argument(
+        "--performance-report",
+        action="store_true",
+        help="Print saved signal performance metrics and optionally send to Telegram",
     )
     parser.add_argument(
         "--watch",
@@ -335,6 +343,7 @@ def send_candidate_alert(
     )
 
     logger.warning("\n%s", format_hype_alert(alert))
+    db.save_signal_history(**build_signal_history_record(alert))
     if telegram:
         try:
             telegram.send_hype_alert(alert)
@@ -352,6 +361,34 @@ def send_candidate_alert(
             item.mentions_count,
             item.average_importance,
         )
+
+
+def build_signal_history_record(alert: HypeAlert) -> dict:
+    signals = [alert.signal]
+    if alert.merged_signal is not None:
+        signals.append(alert.merged_signal)
+    token = next((item.name for item in signals if item.kind == "token"), None)
+    narrative = next((item.name for item in signals if item.kind == "narrative"), None)
+    if token and narrative:
+        signal_type = "token + narrative"
+    elif token:
+        signal_type = "token"
+    else:
+        signal_type = "narrative"
+    momentum_score = max((item.score for item in alert.momentum), default=0)
+    return {
+        "signal_type": signal_type,
+        "token": token,
+        "narrative": narrative,
+        "hype_score": normalize_hype_score(
+            alert.merged_hype_score
+            if alert.merged_hype_score is not None
+            else alert.signal.hype_score
+        ),
+        "momentum_score": momentum_score,
+        "confidence": alert.insight.confidence,
+        "action": alert.insight.action,
+    }
 
 
 def build_telegram(config: Config, disabled: bool = False) -> TelegramAlerter | None:
@@ -599,6 +636,54 @@ def print_and_send_opportunity_report(
             logger.exception("Telegram opportunity report failed")
 
 
+def build_performance_report(db: Database) -> SignalPerformanceReport:
+    summary = db.get_signal_performance_summary()
+    signals_generated = int(summary["signals_generated"] or 0)
+    successful = int(summary["successful"] or 0)
+    accuracy = (successful / signals_generated * 100) if signals_generated else 0.0
+    best = [
+        PerformanceNarrative(
+            name=str(row["name"]),
+            signals_count=int(row["signals_count"]),
+            average_momentum=float(row["average_momentum"] or 0.0),
+            average_confidence=float(row["average_confidence"] or 0.0),
+        )
+        for row in db.get_signal_performance_narratives("DESC")
+    ]
+    worst = [
+        PerformanceNarrative(
+            name=str(row["name"]),
+            signals_count=int(row["signals_count"]),
+            average_momentum=float(row["average_momentum"] or 0.0),
+            average_confidence=float(row["average_confidence"] or 0.0),
+        )
+        for row in db.get_signal_performance_narratives("ASC")
+    ]
+    return SignalPerformanceReport(
+        signals_generated=signals_generated,
+        successful=successful,
+        accuracy=accuracy,
+        average_confidence=float(summary["average_confidence"] or 0.0),
+        average_momentum=float(summary["average_momentum"] or 0.0),
+        best_narratives=best,
+        worst_narratives=worst,
+    )
+
+
+def print_and_send_performance_report(
+    db: Database,
+    telegram: TelegramAlerter | None,
+) -> None:
+    report = build_performance_report(db)
+    logger.info("\n%s", format_performance_report(report))
+    if telegram:
+        try:
+            telegram.send_performance_report(report)
+            logger.info("Telegram performance report sent")
+        except Exception:
+            logger.exception("Telegram performance report failed")
+
+
 def run_local(
     config: Config,
     db: Database,
@@ -732,6 +817,8 @@ def main() -> None:
     try:
         if args.top_opportunities:
             print_and_send_opportunity_report(db, build_telegram(config, args.no_telegram))
+        elif args.performance_report:
+            print_and_send_performance_report(db, build_telegram(config, args.no_telegram))
         elif args.history_report:
             print_and_send_history_report(db, build_telegram(config, args.no_telegram))
         elif args.daily_digest:

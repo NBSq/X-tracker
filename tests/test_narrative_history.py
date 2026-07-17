@@ -123,6 +123,36 @@ class NarrativeHistoryTests(unittest.TestCase):
         self.assertEqual(rows[0]["momentum_score"], 61)
         self.assertEqual(rows[0]["seven_days_ago_score"], 44)
 
+    def test_signal_history_summary_and_rankings(self) -> None:
+        self.db.save_signal_history(
+            signal_type="token + narrative",
+            token="BTC",
+            narrative="Bitcoin / macro",
+            hype_score=92,
+            momentum_score=88,
+            confidence=8,
+            action="research",
+        )
+        self.db.save_signal_history(
+            signal_type="narrative",
+            token=None,
+            narrative="Memecoins",
+            hype_score=35,
+            momentum_score=30,
+            confidence=5,
+            action="ignore",
+        )
+
+        summary = self.db.get_signal_performance_summary()
+        best = self.db.get_signal_performance_narratives("DESC")
+        worst = self.db.get_signal_performance_narratives("ASC")
+
+        self.assertEqual(summary["signals_generated"], 2)
+        self.assertEqual(summary["successful"], 1)
+        self.assertEqual(summary["average_confidence"], 6.5)
+        self.assertEqual(best[0]["name"], "Bitcoin / macro")
+        self.assertEqual(worst[0]["name"], "Memecoins")
+
 
 if __name__ == "__main__":
     unittest.main()

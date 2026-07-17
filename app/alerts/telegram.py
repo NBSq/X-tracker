@@ -91,6 +91,25 @@ class OpportunityReport:
     opportunities: list[NarrativeOpportunity]
 
 
+@dataclass(frozen=True)
+class PerformanceNarrative:
+    name: str
+    signals_count: int
+    average_momentum: float
+    average_confidence: float
+
+
+@dataclass(frozen=True)
+class SignalPerformanceReport:
+    signals_generated: int
+    successful: int
+    accuracy: float
+    average_confidence: float
+    average_momentum: float
+    best_narratives: list[PerformanceNarrative]
+    worst_narratives: list[PerformanceNarrative]
+
+
 class TelegramAlerter:
     def __init__(self, bot_token: str, chat_id: str) -> None:
         self.bot_token = bot_token
@@ -162,6 +181,18 @@ class TelegramAlerter:
             json={
                 "chat_id": self.chat_id,
                 "text": format_telegram_opportunity_report(report),
+                "parse_mode": "HTML",
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+
+    def send_performance_report(self, report: SignalPerformanceReport) -> None:
+        response = requests.post(
+            f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
+            json={
+                "chat_id": self.chat_id,
+                "text": format_telegram_performance_report(report),
                 "parse_mode": "HTML",
             },
             timeout=30,
@@ -539,3 +570,47 @@ def format_telegram_opportunity_report(report: OpportunityReport) -> str:
             f"Status: {escape(item.status)}"
         )
     return "🚀 <b>Top Opportunities</b>\n\n" + "\n\n".join(sections)
+
+
+def format_performance_report(report: SignalPerformanceReport) -> str:
+    best = _format_performance_narratives(report.best_narratives)
+    worst = _format_performance_narratives(report.worst_narratives)
+    return (
+        "📊 Signal Performance\n\n"
+        f"Signals generated: {report.signals_generated}\n"
+        f"Successful: {report.successful}\n"
+        f"Accuracy: {report.accuracy:.0f}%\n\n"
+        f"Average confidence: {report.average_confidence:.1f}/10\n\n"
+        f"Average momentum: {report.average_momentum:.1f}/100\n\n"
+        f"Best performing narratives\n{best or 'None'}\n\n"
+        f"Worst performing narratives\n{worst or 'None'}"
+    )
+
+
+def format_telegram_performance_report(report: SignalPerformanceReport) -> str:
+    best = _format_performance_narratives(report.best_narratives, html=True)
+    worst = _format_performance_narratives(report.worst_narratives, html=True)
+    return (
+        "📊 <b>Signal Performance</b>\n\n"
+        f"<b>Signals generated:</b> {report.signals_generated}\n"
+        f"<b>Successful:</b> {report.successful}\n"
+        f"<b>Accuracy:</b> {report.accuracy:.0f}%\n\n"
+        f"<b>Average confidence:</b> {report.average_confidence:.1f}/10\n\n"
+        f"<b>Average momentum:</b> {report.average_momentum:.1f}/100\n\n"
+        f"<b>Best performing narratives</b>\n{best or 'None'}\n\n"
+        f"<b>Worst performing narratives</b>\n{worst or 'None'}"
+    )
+
+
+def _format_performance_narratives(
+    narratives: list[PerformanceNarrative],
+    html: bool = False,
+) -> str:
+    lines = []
+    for index, item in enumerate(narratives, start=1):
+        name = escape(item.name) if html else item.name
+        lines.append(
+            f"{index}. {name} — momentum {item.average_momentum:.1f}, "
+            f"confidence {item.average_confidence:.1f}, signals {item.signals_count}"
+        )
+    return "\n".join(lines)

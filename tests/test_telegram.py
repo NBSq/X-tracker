@@ -9,6 +9,8 @@ from app.alerts.telegram import (
     MomentumHistoryItem,
     MomentumHistoryReport,
     OpportunityReport,
+    PerformanceNarrative,
+    SignalPerformanceReport,
     NarrativeSummary,
     NarrativeGrowth,
     NarrativeTrend,
@@ -18,11 +20,13 @@ from app.alerts.telegram import (
     format_hype_alert,
     format_history_report,
     format_opportunity_report,
+    format_performance_report,
     format_daily_digest,
     format_summary,
     format_telegram_hype_alert,
     format_telegram_history_report,
     format_telegram_opportunity_report,
+    format_telegram_performance_report,
     format_telegram_daily_digest,
     format_telegram_summary,
     format_telegram_trend_report,
@@ -113,6 +117,29 @@ class TelegramAlertTests(unittest.TestCase):
                     status="Emerging",
                 )
             ]
+        )
+        self.performance_report = SignalPerformanceReport(
+            signals_generated=2,
+            successful=1,
+            accuracy=50.0,
+            average_confidence=6.5,
+            average_momentum=59.0,
+            best_narratives=[
+                PerformanceNarrative(
+                    name="Bitcoin / macro",
+                    signals_count=1,
+                    average_momentum=88.0,
+                    average_confidence=8.0,
+                )
+            ],
+            worst_narratives=[
+                PerformanceNarrative(
+                    name="Memecoins",
+                    signals_count=1,
+                    average_momentum=30.0,
+                    average_confidence=5.0,
+                )
+            ],
         )
 
     def test_html_formatter_escapes_dynamic_content(self) -> None:
@@ -306,6 +333,27 @@ class TelegramAlertTests(unittest.TestCase):
         request = post.call_args
         self.assertEqual(request.kwargs["json"]["parse_mode"], "HTML")
         self.assertIn("Top Opportunities", request.kwargs["json"]["text"])
+
+    def test_performance_report_formatters(self) -> None:
+        plain = format_performance_report(self.performance_report)
+        html = format_telegram_performance_report(self.performance_report)
+
+        self.assertIn("Signals generated: 2", plain)
+        self.assertIn("Successful: 1", plain)
+        self.assertIn("Accuracy: 50%", plain)
+        self.assertIn("Bitcoin / macro", html)
+
+    @patch("app.alerts.telegram.requests.post")
+    def test_performance_report_sender_uses_html_parse_mode(self, post) -> None:
+        post.return_value.raise_for_status.return_value = None
+
+        TelegramAlerter("test-token", "test-chat").send_performance_report(
+            self.performance_report
+        )
+
+        request = post.call_args
+        self.assertEqual(request.kwargs["json"]["parse_mode"], "HTML")
+        self.assertIn("Signal Performance", request.kwargs["json"]["text"])
 
 
 if __name__ == "__main__":

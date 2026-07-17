@@ -59,6 +59,18 @@ class Database:
                 momentum_score INTEGER NOT NULL,
                 PRIMARY KEY (date, narrative)
             );
+
+            CREATE TABLE IF NOT EXISTS signal_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                signal_type TEXT NOT NULL,
+                token TEXT,
+                narrative TEXT,
+                hype_score REAL NOT NULL,
+                momentum_score REAL NOT NULL,
+                confidence INTEGER NOT NULL,
+                action TEXT NOT NULL
+            );
             """
         )
         self.connection.commit()
@@ -68,6 +80,7 @@ class Database:
         self.connection.execute("DELETE FROM analyzed_posts")
         self.connection.execute("DELETE FROM narrative_score_history")
         self.connection.execute("DELETE FROM daily_momentum")
+        self.connection.execute("DELETE FROM signal_history")
         self.connection.commit()
 
     def has_post(self, post_id: str) -> bool:
@@ -372,6 +385,74 @@ class Database:
             (kind, name, hype_score, mentions_count, average_importance),
         )
         self.connection.commit()
+
+    def save_signal_history(
+        self,
+        signal_type: str,
+        token: str | None,
+        narrative: str | None,
+        hype_score: float,
+        momentum_score: float,
+        confidence: int,
+        action: str,
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO signal_history (
+                signal_type, token, narrative, hype_score, momentum_score,
+                confidence, action
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                signal_type,
+                token,
+                narrative,
+                hype_score,
+                momentum_score,
+                confidence,
+                action,
+            ),
+        )
+        self.connection.commit()
+
+    def get_signal_performance_summary(self) -> sqlite3.Row:
+        return self.connection.execute(
+            """
+            SELECT
+                COUNT(*) AS signals_generated,
+                SUM(CASE
+                    WHEN action IN ('watch', 'research') AND confidence >= 7
+                    THEN 1 ELSE 0
+                END) AS successful,
+                AVG(confidence) AS average_confidence,
+                AVG(momentum_score) AS average_momentum
+            FROM signal_history
+            """
+        ).fetchone()
+
+    def get_signal_performance_narratives(
+        self,
+        order: str = "DESC",
+        limit: int = 5,
+    ) -> list[sqlite3.Row]:
+        if order not in {"ASC", "DESC"}:
+            raise ValueError("order must be ASC or DESC")
+        return self.connection.execute(
+            f"""
+            SELECT
+                COALESCE(narrative, token, 'Unknown') AS name,
+                COUNT(*) AS signals_count,
+                AVG(momentum_score) AS average_momentum,
+                AVG(confidence) AS average_confidence,
+                AVG(hype_score) AS average_hype
+            FROM signal_history
+            GROUP BY COALESCE(narrative, token, 'Unknown')
+            ORDER BY average_momentum {order}, average_confidence {order}, signals_count DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
 
     def close(self) -> None:
         self.connection.close()
