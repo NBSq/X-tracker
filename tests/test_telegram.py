@@ -9,7 +9,9 @@ from app.alerts.telegram import (
     MomentumHistoryItem,
     MomentumHistoryReport,
     OpportunityReport,
+    OutcomeNarrative,
     PerformanceNarrative,
+    SignalOutcomeReport,
     SignalPerformanceReport,
     NarrativeSummary,
     NarrativeGrowth,
@@ -20,12 +22,14 @@ from app.alerts.telegram import (
     format_hype_alert,
     format_history_report,
     format_opportunity_report,
+    format_outcome_report,
     format_performance_report,
     format_daily_digest,
     format_summary,
     format_telegram_hype_alert,
     format_telegram_history_report,
     format_telegram_opportunity_report,
+    format_telegram_outcome_report,
     format_telegram_performance_report,
     format_telegram_daily_digest,
     format_telegram_summary,
@@ -139,6 +143,21 @@ class TelegramAlertTests(unittest.TestCase):
                     average_momentum=30.0,
                     average_confidence=5.0,
                 )
+            ],
+        )
+        self.outcome_report = SignalOutcomeReport(
+            signals_evaluated=3,
+            success=2,
+            neutral=0,
+            failed=1,
+            success_rate=66.7,
+            average_mention_change=1.5,
+            average_momentum_change=8.0,
+            best_narratives=[
+                OutcomeNarrative("AI <Agents>", 2, 1.0, 15.0)
+            ],
+            worst_narratives=[
+                OutcomeNarrative("Memecoins", 1, -1.0, -6.0)
             ],
         )
 
@@ -354,6 +373,50 @@ class TelegramAlertTests(unittest.TestCase):
         request = post.call_args
         self.assertEqual(request.kwargs["json"]["parse_mode"], "HTML")
         self.assertIn("Signal Performance", request.kwargs["json"]["text"])
+
+    def test_outcome_report_formatters(self) -> None:
+        plain = format_outcome_report(self.outcome_report)
+        html = format_telegram_outcome_report(self.outcome_report)
+
+        self.assertIn("Signals evaluated: 3", plain)
+        self.assertIn("Success rate: 67%", plain)
+        self.assertIn("AI &lt;Agents&gt;", html)
+
+    @patch("app.alerts.telegram.requests.post")
+    def test_outcome_report_sender_uses_html_parse_mode(self, post) -> None:
+        post.return_value.raise_for_status.return_value = None
+
+        TelegramAlerter("test-token", "test-chat").send_outcome_report(
+            self.outcome_report
+        )
+
+        request = post.call_args
+        self.assertEqual(request.kwargs["json"]["parse_mode"], "HTML")
+        self.assertIn("Signal Outcomes", request.kwargs["json"]["text"])
+
+    @patch("app.alerts.telegram.requests.post")
+    @patch("app.alerts.telegram.requests.get")
+    def test_performance_command_sends_outcome_summary(self, get, post) -> None:
+        get.return_value.raise_for_status.return_value = None
+        get.return_value.json.return_value = {
+            "result": [
+                {
+                    "update_id": 42,
+                    "message": {
+                        "chat": {"id": "test-chat"},
+                        "text": "/performance",
+                    },
+                }
+            ]
+        }
+        post.return_value.raise_for_status.return_value = None
+
+        handled = TelegramAlerter(
+            "test-token", "test-chat"
+        ).poll_performance_commands(self.outcome_report)
+
+        self.assertEqual(handled, 1)
+        self.assertIn("Signal Outcomes", post.call_args.kwargs["json"]["text"])
 
 
 if __name__ == "__main__":

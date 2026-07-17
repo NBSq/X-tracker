@@ -49,10 +49,12 @@ flowchart LR
     DB --> Hype["Hype Scoring"]
     DB --> Momentum["Narrative Momentum"]
     DB --> History["Narrative History"]
+    DB --> Outcomes["Signal Outcomes Engine"]
 
     Hype --> Alerts["Spike Alerts"]
     Momentum --> Reports["Trend Reports / Daily Digests"]
     History --> Reports
+    Outcomes --> Reports
 
     Alerts --> Console["Console Logging"]
     Alerts --> Telegram["Telegram Bot API"]
@@ -109,6 +111,7 @@ app/
   db/database.py
   scoring/hype_score.py
   scoring/momentum_score.py
+  scoring/signal_outcomes.py
   sources/local_client.py
   sources/rss_client.py
   sources/x_client.py
@@ -160,6 +163,9 @@ FETCH_INTERVAL_SECONDS=900
 HYPE_ALERT_THRESHOLD=25
 POSTS_PER_ACCOUNT=10
 RSS_ARTICLES_PER_FEED=10
+OUTCOME_EVALUATION_HOURS=24
+OUTCOME_SUCCESS_THRESHOLD=10
+OUTCOME_FAILURE_THRESHOLD=-10
 ```
 
 When Telegram credentials are missing, the application continues normally and logs reports to the console.
@@ -312,7 +318,25 @@ Generate signal performance metrics from saved alerts:
 python -m app.main --performance-report
 ```
 
-Every generated alert is saved in the `signal_history` SQLite table with signal type, token, narrative, display hype score, momentum score, confidence, and action. Until price/outcome tracking is added, `Successful` and `Accuracy` use a proxy definition: signals with action `watch` or `research` and confidence of at least `7/10` count as successful.
+Every generated alert is saved in the `signal_history` SQLite table with signal type, token, narrative, display hype score, mention count, momentum score, confidence, and action. The existing performance report retains its confidence/action proxy definition for backward compatibility.
+
+### Signal Outcomes
+
+Generate an outcome report from mature saved signals:
+
+```powershell
+python -m app.main --outcome-report
+```
+
+The outcomes engine runs automatically after each source-processing cycle. Once a signal reaches `OUTCOME_EVALUATION_HOURS`, it compares the signal baseline with current stored feed statistics:
+
+- Mention count
+- Normalized hype score
+- Momentum score
+
+The weighted change index classifies the signal as `SUCCESS`, `NEUTRAL`, or `FAILED`. `OUTCOME_SUCCESS_THRESHOLD` and `OUTCOME_FAILURE_THRESHOLD` control the boundaries. Each signal is evaluated once per configured horizon and persisted in `signal_outcomes`; repeated report commands do not create duplicate evaluations.
+
+The outcome report includes totals, success rate, average mention and momentum changes, and best/worst narratives. It is sent to Telegram automatically when configured. While the tracker is running, sending `/performance` to the configured bot returns the same outcome summary; commands from other chat IDs are ignored.
 
 ## Telegram Examples
 
@@ -428,13 +452,15 @@ pytest
 - Merged spike hype is recalculated from all unique posts causing the paired signals; only the top three are displayed. This prevents token and narrative components from double-counting the same evidence.
 - Narrative score snapshots are stored after each processing run.
 - Generated alerts are stored in `signal_history` for performance reporting.
-- `--reset-db` clears analyses, alerts, narrative history, momentum snapshots, and signal history.
+- Mature signals are evaluated automatically and stored in `signal_outcomes`.
+- Existing databases are migrated in place with the signal mention baseline column.
+- `--reset-db` clears analyses, alerts, narrative history, momentum snapshots, signal history, and signal outcomes.
 - Individual post-analysis, feed, OpenAI, and Telegram errors are logged without silently failing.
 
 ## Roadmap
 
 - [ ] Add a web dashboard for narratives, tokens, and source activity
-- [ ] Add configurable scoring weights and time windows
+- [ ] Add configurable outcome scoring weights and multiple evaluation horizons
 - [ ] Add source-level reliability and influence weighting
 - [ ] Add semantic clustering for emerging narratives
 - [ ] Add historical charts and momentum sparklines

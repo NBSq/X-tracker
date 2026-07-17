@@ -16,7 +16,9 @@ from app.alerts.telegram import (
     MomentumHistoryItem,
     MomentumHistoryReport,
     OpportunityReport,
+    OutcomeNarrative,
     PerformanceNarrative,
+    SignalOutcomeReport,
     SignalPerformanceReport,
     NarrativeSummary,
     NarrativeGrowth,
@@ -27,6 +29,7 @@ from app.alerts.telegram import (
     format_hype_alert,
     format_history_report,
     format_opportunity_report,
+    format_outcome_report,
     format_performance_report,
     format_daily_digest,
     format_summary,
@@ -43,6 +46,7 @@ from app.scoring.hype_score import (
 )
 from app.scoring.momentum_score import NarrativeMomentum, calculate_momentum_score
 from app.scoring.opportunity_score import build_opportunity
+from app.scoring.signal_outcomes import OutcomeThresholds, evaluate_pending_signals
 from app.sources.local_client import load_sample_posts
 from app.sources.rss_client import RSSClient, load_rss_feeds
 from app.sources.x_client import XClient, XPost
@@ -131,6 +135,11 @@ def parse_args() -> argparse.Namespace:
         help="Print saved signal performance metrics and optionally send to Telegram",
     )
     parser.add_argument(
+        "--outcome-report",
+        action="store_true",
+        help="Evaluate mature signals and print outcome statistics",
+    )
+    parser.add_argument(
         "--watch",
         action="store_true",
         help="Keep RSS mode running and poll continuously",
@@ -174,6 +183,8 @@ def process_posts(
     logger.info("Saved %d new analyses", analyzed_count)
     db.save_narrative_score_history(db.get_recent_signal_stats())
     evaluate_hype(config, db, telegram, analyzer)
+    evaluate_signal_outcomes(config, db)
+    poll_telegram_performance(telegram, db)
 
 
 def evaluate_hype(
@@ -269,8 +280,10 @@ def send_candidate_alert(
     context_rows = list(unique_rows.values())
     context_rows.sort(key=lambda item: int(item["importance"]), reverse=True)
     merged_hype_score = None
+    baseline_mentions_count = signal.mentions_count
     if merged_signal and context_rows:
         unique_mentions_count = len(context_rows)
+        baseline_mentions_count = unique_mentions_count
         average_importance = sum(
             float(item["importance"]) for item in context_rows
         ) / unique_mentions_count
@@ -340,6 +353,7 @@ def send_candidate_alert(
         momentum=(relevant_momentum or momentum_scores)[:5],
         merged_signal=merged_signal,
         merged_hype_score=merged_hype_score,
+        baseline_mentions_count=baseline_mentions_count,
     )
 
     logger.warning("\n%s", format_hype_alert(alert))
@@ -388,6 +402,11 @@ def build_signal_history_record(alert: HypeAlert) -> dict:
         "momentum_score": momentum_score,
         "confidence": alert.insight.confidence,
         "action": alert.insight.action,
+        "mentions_count": (
+            alert.baseline_mentions_count
+            if alert.baseline_mentions_count is not None
+            else alert.signal.mentions_count
+        ),
     }
 
 
@@ -684,6 +703,85 @@ def print_and_send_performance_report(
             logger.exception("Telegram performance report failed")
 
 
+def outcome_thresholds(config: Config) -> OutcomeThresholds:
+    return OutcomeThresholds(
+        success=config.outcome_success_threshold,
+        failure=config.outcome_failure_threshold,
+    )
+
+
+def evaluate_signal_outcomes(config: Config, db: Database) -> int:
+    evaluated = evaluate_pending_signals(
+        db,
+        hours_after=config.outcome_evaluation_hours,
+        thresholds=outcome_thresholds(config),
+    )
+    if evaluated:
+        logger.info("Evaluated %d signal outcomes", evaluated)
+    return evaluated
+
+
+def build_outcome_report(db: Database) -> SignalOutcomeReport:
+    summary = db.get_signal_outcome_summary()
+    signals_evaluated = int(summary["signals_evaluated"] or 0)
+    success = int(summary["success"] or 0)
+
+    def narrative_rows(order: str) -> list[OutcomeNarrative]:
+        return [
+            OutcomeNarrative(
+                name=str(row["name"]),
+                evaluated_count=int(row["evaluated_count"]),
+                outcome_score=float(row["outcome_score"] or 0.0),
+                average_momentum_change=float(
+                    row["average_momentum_change"] or 0.0
+                ),
+            )
+            for row in db.get_signal_outcome_narratives(order)
+        ]
+
+    return SignalOutcomeReport(
+        signals_evaluated=signals_evaluated,
+        success=success,
+        neutral=int(summary["neutral"] or 0),
+        failed=int(summary["failed"] or 0),
+        success_rate=(success / signals_evaluated * 100) if signals_evaluated else 0.0,
+        average_mention_change=float(summary["average_mention_change"] or 0.0),
+        average_momentum_change=float(summary["average_momentum_change"] or 0.0),
+        best_narratives=narrative_rows("DESC"),
+        worst_narratives=narrative_rows("ASC"),
+    )
+
+
+def print_and_send_outcome_report(
+    config: Config,
+    db: Database,
+    telegram: TelegramAlerter | None,
+) -> None:
+    evaluate_signal_outcomes(config, db)
+    report = build_outcome_report(db)
+    logger.info("\n%s", format_outcome_report(report))
+    if telegram:
+        try:
+            telegram.send_outcome_report(report)
+            logger.info("Telegram outcome report sent")
+        except Exception:
+            logger.exception("Telegram outcome report failed")
+
+
+def poll_telegram_performance(
+    telegram: TelegramAlerter | None,
+    db: Database,
+) -> None:
+    if not telegram:
+        return
+    try:
+        handled = telegram.poll_performance_commands(build_outcome_report(db))
+        if handled:
+            logger.info("Handled %d Telegram /performance command(s)", handled)
+    except Exception:
+        logger.exception("Telegram command polling failed")
+
+
 def run_local(
     config: Config,
     db: Database,
@@ -819,6 +917,12 @@ def main() -> None:
             print_and_send_opportunity_report(db, build_telegram(config, args.no_telegram))
         elif args.performance_report:
             print_and_send_performance_report(db, build_telegram(config, args.no_telegram))
+        elif args.outcome_report:
+            print_and_send_outcome_report(
+                config,
+                db,
+                build_telegram(config, args.no_telegram),
+            )
         elif args.history_report:
             print_and_send_history_report(db, build_telegram(config, args.no_telegram))
         elif args.daily_digest:

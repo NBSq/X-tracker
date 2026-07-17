@@ -69,13 +69,43 @@ class Database:
                 hype_score REAL NOT NULL,
                 momentum_score REAL NOT NULL,
                 confidence INTEGER NOT NULL,
-                action TEXT NOT NULL
+                action TEXT NOT NULL,
+                mentions_count INTEGER
             );
+
+            CREATE TABLE IF NOT EXISTS signal_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id INTEGER NOT NULL,
+                evaluated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                hours_after INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('SUCCESS', 'NEUTRAL', 'FAILED')),
+                score_change REAL NOT NULL,
+                mentions_change INTEGER NOT NULL,
+                momentum_change REAL NOT NULL,
+                notes TEXT NOT NULL,
+                FOREIGN KEY (signal_id) REFERENCES signal_history(id),
+                UNIQUE (signal_id, hours_after)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_signal_outcomes_signal_id
+            ON signal_outcomes(signal_id);
             """
         )
+        self._add_column_if_missing("signal_history", "mentions_count", "INTEGER")
         self.connection.commit()
 
+    def _add_column_if_missing(self, table: str, column: str, definition: str) -> None:
+        columns = {
+            str(row["name"])
+            for row in self.connection.execute(f"PRAGMA table_info({table})")
+        }
+        if column not in columns:
+            self.connection.execute(
+                f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+            )
+
     def reset(self) -> None:
+        self.connection.execute("DELETE FROM signal_outcomes")
         self.connection.execute("DELETE FROM alerts")
         self.connection.execute("DELETE FROM analyzed_posts")
         self.connection.execute("DELETE FROM narrative_score_history")
@@ -395,14 +425,15 @@ class Database:
         momentum_score: float,
         confidence: int,
         action: str,
-    ) -> None:
+        mentions_count: int | None = None,
+    ) -> int:
         self.connection.execute(
             """
             INSERT INTO signal_history (
                 signal_type, token, narrative, hype_score, momentum_score,
-                confidence, action
+                confidence, action, mentions_count
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 signal_type,
@@ -412,9 +443,139 @@ class Database:
                 momentum_score,
                 confidence,
                 action,
+                mentions_count,
             ),
         )
         self.connection.commit()
+        return int(self.connection.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+    def get_pending_signal_outcomes(self, hours_after: int) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT signal.*
+            FROM signal_history AS signal
+            WHERE signal.timestamp <= datetime('now', ?)
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM signal_outcomes AS outcome
+                  WHERE outcome.signal_id = signal.id
+                    AND outcome.hours_after = ?
+              )
+            ORDER BY signal.timestamp, signal.id
+            """,
+            (f"-{hours_after} hours", hours_after),
+        ).fetchall()
+
+    def get_current_signal_metrics(
+        self,
+        token: str | None,
+        narrative: str | None,
+        lookback_hours: int,
+    ) -> sqlite3.Row:
+        return self.connection.execute(
+            """
+            SELECT
+                COUNT(*) AS mentions_count,
+                COALESCE(AVG(importance), 0.0) AS average_importance,
+                COALESCE(
+                    (julianday('now') - julianday(MAX(analyzed_at))) * 24.0,
+                    ?
+                ) AS recency_hours
+            FROM analyzed_posts
+            WHERE analyzed_at >= datetime('now', ?)
+              AND (
+                  (? IS NOT NULL AND EXISTS (
+                      SELECT 1 FROM json_each(tokens_json)
+                      WHERE value = ? COLLATE NOCASE
+                  ))
+                  OR
+                  (? IS NOT NULL AND EXISTS (
+                      SELECT 1 FROM json_each(narratives_json)
+                      WHERE value = ? COLLATE NOCASE
+                  ))
+              )
+            """,
+            (
+                lookback_hours,
+                f"-{lookback_hours} hours",
+                token,
+                token,
+                narrative,
+                narrative,
+            ),
+        ).fetchone()
+
+    def save_signal_outcome(
+        self,
+        signal_id: int,
+        hours_after: int,
+        status: str,
+        score_change: float,
+        mentions_change: int,
+        momentum_change: float,
+        notes: str,
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT OR IGNORE INTO signal_outcomes (
+                signal_id, hours_after, status, score_change,
+                mentions_change, momentum_change, notes
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                signal_id,
+                hours_after,
+                status,
+                score_change,
+                mentions_change,
+                momentum_change,
+                notes,
+            ),
+        )
+        self.connection.commit()
+
+    def get_signal_outcome_summary(self) -> sqlite3.Row:
+        return self.connection.execute(
+            """
+            SELECT
+                COUNT(*) AS signals_evaluated,
+                SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) AS success,
+                SUM(CASE WHEN status = 'NEUTRAL' THEN 1 ELSE 0 END) AS neutral,
+                SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) AS failed,
+                AVG(mentions_change) AS average_mention_change,
+                AVG(momentum_change) AS average_momentum_change
+            FROM signal_outcomes
+            """
+        ).fetchone()
+
+    def get_signal_outcome_narratives(
+        self,
+        order: str = "DESC",
+        limit: int = 5,
+    ) -> list[sqlite3.Row]:
+        if order not in {"ASC", "DESC"}:
+            raise ValueError("order must be ASC or DESC")
+        return self.connection.execute(
+            f"""
+            SELECT
+                signal.narrative AS name,
+                COUNT(*) AS evaluated_count,
+                AVG(CASE outcome.status
+                    WHEN 'SUCCESS' THEN 1.0
+                    WHEN 'NEUTRAL' THEN 0.0
+                    ELSE -1.0
+                END) AS outcome_score,
+                AVG(outcome.momentum_change) AS average_momentum_change
+            FROM signal_outcomes AS outcome
+            JOIN signal_history AS signal ON signal.id = outcome.signal_id
+            WHERE signal.narrative IS NOT NULL
+            GROUP BY signal.narrative
+            ORDER BY outcome_score {order}, average_momentum_change {order}, evaluated_count DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
 
     def get_signal_performance_summary(self) -> sqlite3.Row:
         return self.connection.execute(

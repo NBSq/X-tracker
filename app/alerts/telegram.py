@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from html import escape
+from typing import ClassVar
 
 import requests
 
@@ -28,6 +29,7 @@ class HypeAlert:
     momentum: list[NarrativeMomentum]
     merged_signal: HypeSignal | None = None
     merged_hype_score: float | None = None
+    baseline_mentions_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -110,10 +112,35 @@ class SignalPerformanceReport:
     worst_narratives: list[PerformanceNarrative]
 
 
+@dataclass(frozen=True)
+class OutcomeNarrative:
+    name: str
+    evaluated_count: int
+    outcome_score: float
+    average_momentum_change: float
+
+
+@dataclass(frozen=True)
+class SignalOutcomeReport:
+    signals_evaluated: int
+    success: int
+    neutral: int
+    failed: int
+    success_rate: float
+    average_mention_change: float
+    average_momentum_change: float
+    best_narratives: list[OutcomeNarrative]
+    worst_narratives: list[OutcomeNarrative]
+
+
 class TelegramAlerter:
+    _command_offsets: ClassVar[dict[tuple[str, str], int]] = {}
+
     def __init__(self, bot_token: str, chat_id: str) -> None:
         self.bot_token = bot_token
         self.chat_id = chat_id
+        self._command_key = (bot_token, str(chat_id))
+        self._update_offset = self._command_offsets.get(self._command_key)
 
     def send_hype_alert(self, alert: HypeAlert) -> None:
         response = requests.post(
@@ -198,6 +225,47 @@ class TelegramAlerter:
             timeout=30,
         )
         response.raise_for_status()
+
+    def send_outcome_report(self, report: SignalOutcomeReport) -> None:
+        response = requests.post(
+            f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
+            json={
+                "chat_id": self.chat_id,
+                "text": format_telegram_outcome_report(report),
+                "parse_mode": "HTML",
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+
+    def poll_performance_commands(self, report: SignalOutcomeReport) -> int:
+        params: dict[str, object] = {
+            "timeout": 0,
+            "allowed_updates": '["message"]',
+        }
+        if self._update_offset is not None:
+            params["offset"] = self._update_offset
+        response = requests.get(
+            f"https://api.telegram.org/bot{self.bot_token}/getUpdates",
+            params=params,
+            timeout=30,
+        )
+        response.raise_for_status()
+        handled = 0
+        for update in response.json().get("result", []):
+            update_id = int(update.get("update_id", 0))
+            self._update_offset = max(self._update_offset or 0, update_id + 1)
+            self._command_offsets[self._command_key] = self._update_offset
+            message = update.get("message") or {}
+            chat_id = str((message.get("chat") or {}).get("id", ""))
+            command = str(message.get("text", "")).split(maxsplit=1)[0]
+            if chat_id != str(self.chat_id):
+                continue
+            if command.split("@", 1)[0].lower() != "/performance":
+                continue
+            self.send_outcome_report(report)
+            handled += 1
+        return handled
 
 
 def format_hype_alert(alert: HypeAlert) -> str:
@@ -600,6 +668,55 @@ def format_telegram_performance_report(report: SignalPerformanceReport) -> str:
         f"<b>Best performing narratives</b>\n{best or 'None'}\n\n"
         f"<b>Worst performing narratives</b>\n{worst or 'None'}"
     )
+
+
+def format_outcome_report(report: SignalOutcomeReport) -> str:
+    best = _format_outcome_narratives(report.best_narratives)
+    worst = _format_outcome_narratives(report.worst_narratives)
+    return (
+        "📈 Signal Outcomes\n\n"
+        f"Signals evaluated: {report.signals_evaluated}\n"
+        f"Success: {report.success}\n"
+        f"Neutral: {report.neutral}\n"
+        f"Failed: {report.failed}\n"
+        f"Success rate: {report.success_rate:.0f}%\n\n"
+        f"Average mention change: {report.average_mention_change:+.1f}\n\n"
+        f"Average momentum change: {report.average_momentum_change:+.1f}\n\n"
+        f"Best narratives\n{best or 'None'}\n\n"
+        f"Worst narratives\n{worst or 'None'}"
+    )
+
+
+def format_telegram_outcome_report(report: SignalOutcomeReport) -> str:
+    best = _format_outcome_narratives(report.best_narratives, html=True)
+    worst = _format_outcome_narratives(report.worst_narratives, html=True)
+    return (
+        "📈 <b>Signal Outcomes</b>\n\n"
+        f"<b>Signals evaluated:</b> {report.signals_evaluated}\n"
+        f"<b>Success:</b> {report.success}\n"
+        f"<b>Neutral:</b> {report.neutral}\n"
+        f"<b>Failed:</b> {report.failed}\n"
+        f"<b>Success rate:</b> {report.success_rate:.0f}%\n\n"
+        f"<b>Average mention change:</b> {report.average_mention_change:+.1f}\n\n"
+        f"<b>Average momentum change:</b> {report.average_momentum_change:+.1f}\n\n"
+        f"<b>Best narratives</b>\n{best or 'None'}\n\n"
+        f"<b>Worst narratives</b>\n{worst or 'None'}"
+    )
+
+
+def _format_outcome_narratives(
+    narratives: list[OutcomeNarrative],
+    html: bool = False,
+) -> str:
+    lines = []
+    for index, item in enumerate(narratives, start=1):
+        name = escape(item.name) if html else item.name
+        lines.append(
+            f"{index}. {name} — outcome {item.outcome_score:+.2f}, "
+            f"momentum {item.average_momentum_change:+.1f}, "
+            f"evaluated {item.evaluated_count}"
+        )
+    return "\n".join(lines)
 
 
 def _format_performance_narratives(

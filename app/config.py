@@ -20,6 +20,9 @@ class Config:
     hype_alert_threshold: float
     posts_per_account: int
     rss_articles_per_feed: int
+    outcome_evaluation_hours: int
+    outcome_success_threshold: float
+    outcome_failure_threshold: float
     accounts_path: Path
     narratives_path: Path
     sample_posts_path: Path
@@ -54,6 +57,9 @@ def load_config() -> Config:
         hype_alert_threshold=_get_float_env("HYPE_ALERT_THRESHOLD", "25"),
         posts_per_account=_get_int_env("POSTS_PER_ACCOUNT", "10"),
         rss_articles_per_feed=_get_int_env("RSS_ARTICLES_PER_FEED", "10"),
+        outcome_evaluation_hours=_get_int_env("OUTCOME_EVALUATION_HOURS", "24"),
+        outcome_success_threshold=_get_float_env("OUTCOME_SUCCESS_THRESHOLD", "10"),
+        outcome_failure_threshold=_get_float_env("OUTCOME_FAILURE_THRESHOLD", "-10"),
         accounts_path=BASE_DIR / "data" / "accounts.json",
         narratives_path=BASE_DIR / "data" / "narratives.json",
         sample_posts_path=BASE_DIR / "data" / "sample_posts.json",
