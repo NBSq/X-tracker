@@ -1,0 +1,12 @@
+{% set rows = signals if signals is defined else data.signals %}
+{% for signal in rows %}
+<tr>
+  <td><strong>{{ signal.token or signal.narrative or 'Unknown' }}</strong>{% if signal.token and signal.narrative %}<small>{{ signal.narrative }}</small>{% endif %}</td>
+  <td><span class="type-label">{{ signal.signal_type }}</span></td>
+  <td><b>{{ signal.hype_score|int }}</b><span class="score-muted">/100</span></td>
+  <td>{{ signal.momentum_score|int }}</td>
+  <td>{{ signal.confidence }}/10</td>
+  <td><span class="action action-{{ signal.action }}">{{ signal.action }}</span></td>
+  <td><span class="outcome outcome-{{ (signal.outcome_status or 'pending')|lower }}">{{ signal.outcome_status or 'Pending' }}</span></td>
+</tr>
+{% else %}<tr><td colspan="7" class="empty-state">No signals have been generated.</td></tr>{% endfor %}

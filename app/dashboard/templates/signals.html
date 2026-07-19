@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Signals{% endblock %}
+{% block heading %}Signals{% endblock %}
+{% block content %}
+<section class="dashboard-section">
+  <div class="section-heading"><h2>Latest signal history</h2><span class="section-meta">Newest first</span></div>
+  <div class="table-responsive">
+    <table class="table signal-table align-middle mb-0">
+      <thead><tr><th>Signal</th><th>Type</th><th>Hype</th><th>Momentum</th><th>Confidence</th><th>Action</th><th>Outcome</th></tr></thead>
+      <tbody id="signals-body">{% include "partials/signal_rows.html" %}</tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

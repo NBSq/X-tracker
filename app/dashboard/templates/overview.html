@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block heading %}Overview{% endblock %}
+{% block content %}
+<section class="metric-grid mb-5" aria-label="System metrics">
+  <article class="metric-card"><span>Analyzed posts</span><strong id="metric-posts">{{ data.status.analyzed_posts }}</strong></article>
+  <article class="metric-card"><span>Signals</span><strong id="metric-signals">{{ data.performance.signals_generated }}</strong></article>
+  <article class="metric-card"><span>Accuracy</span><strong id="metric-accuracy">{{ '%.1f'|format(data.performance.accuracy) }}%</strong></article>
+  <article class="metric-card"><span>Avg. momentum</span><strong id="metric-momentum">{{ '%.1f'|format(data.performance.average_momentum) }}</strong></article>
+</section>
+
+<section class="dashboard-section mb-5">
+  <div class="section-heading"><h2>Latest signals</h2><a href="/signals">View all</a></div>
+  <div class="table-responsive">
+    <table class="table signal-table align-middle mb-0">
+      <thead><tr><th>Signal</th><th>Type</th><th>Hype</th><th>Momentum</th><th>Confidence</th><th>Action</th><th>Outcome</th></tr></thead>
+      <tbody id="signals-body">{% include "partials/signal_rows.html" with context %}</tbody>
+    </table>
+  </div>
+</section>
+
+<div class="row g-5">
+  <section class="col-lg-6 dashboard-section">
+    <div class="section-heading"><h2>Top narratives</h2><a href="/narratives">Explore</a></div>
+    <div id="narratives-list" class="ranking-list">
+      {% for item in data.narratives %}{% include "partials/ranking_item.html" %}{% else %}<p class="empty-state">No narrative data yet.</p>{% endfor %}
+    </div>
+  </section>
+  <section class="col-lg-6 dashboard-section">
+    <div class="section-heading"><h2>Top tokens</h2><a href="/tokens">Explore</a></div>
+    <div id="tokens-list" class="ranking-list">
+      {% for item in data.tokens %}{% include "partials/ranking_item.html" %}{% else %}<p class="empty-state">No token data yet.</p>{% endfor %}
+    </div>
+  </section>
+</div>
+{% endblock %}

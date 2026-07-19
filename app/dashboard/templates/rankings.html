@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block heading %}{{ title }}{% endblock %}
+{% block content %}
+<section class="dashboard-section">
+  <div class="section-heading"><h2>Top {{ title|lower }} · 24 hours</h2><span class="section-meta">Ranked by hype</span></div>
+  <div class="table-responsive">
+    <table class="table ranking-table align-middle mb-0">
+      <thead><tr><th>#</th><th>Name</th><th>Mentions</th><th>Importance</th><th>Hype</th>{% if page == 'narratives' %}<th>Momentum</th>{% endif %}</tr></thead>
+      <tbody id="rankings-body">
+      {% for item in rankings %}<tr><td class="rank">{{ loop.index }}</td><td><strong>{{ item.name }}</strong></td><td>{{ item.mentions }}</td><td>{{ '%.1f'|format(item.average_importance) }}</td><td><span class="score-bar"><i style="width: {{ item.hype_score }}%"></i></span><b>{{ item.hype_score }}</b></td>{% if page == 'narratives' %}<td>{{ item.momentum_score }}</td>{% endif %}</tr>{% else %}<tr><td colspan="6" class="empty-state">No data in the last 24 hours.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

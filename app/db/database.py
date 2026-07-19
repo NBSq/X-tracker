@@ -615,5 +615,92 @@ class Database:
             (limit,),
         ).fetchall()
 
+    def get_latest_signals(self, limit: int = 50) -> list[sqlite3.Row]:
+        if not self.has_table("signal_history"):
+            return []
+        outcome_columns = (
+            "outcome.status AS outcome_status, outcome.score_change, "
+            "outcome.mentions_change, outcome.momentum_change, outcome.evaluated_at"
+            if self.has_table("signal_outcomes")
+            else (
+                "NULL AS outcome_status, NULL AS score_change, "
+                "NULL AS mentions_change, NULL AS momentum_change, "
+                "NULL AS evaluated_at"
+            )
+        )
+        outcome_join = (
+            """
+            LEFT JOIN signal_outcomes AS outcome
+              ON outcome.id = (
+                  SELECT latest.id
+                  FROM signal_outcomes AS latest
+                  WHERE latest.signal_id = signal.id
+                  ORDER BY latest.evaluated_at DESC, latest.id DESC
+                  LIMIT 1
+              )
+            """
+            if self.has_table("signal_outcomes")
+            else ""
+        )
+        return self.connection.execute(
+            f"""
+            SELECT
+                signal.*,
+                {outcome_columns}
+            FROM signal_history AS signal
+            {outcome_join}
+            ORDER BY signal.timestamp DESC, signal.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    def get_latest_narrative_momentum(self) -> list[sqlite3.Row]:
+        if not self.has_table("daily_momentum"):
+            return []
+        return self.connection.execute(
+            """
+            WITH latest_dates AS (
+                SELECT narrative, MAX(date) AS latest_date
+                FROM daily_momentum
+                GROUP BY narrative
+            )
+            SELECT snapshot.narrative, snapshot.momentum_score, snapshot.date
+            FROM daily_momentum AS snapshot
+            JOIN latest_dates
+              ON latest_dates.narrative = snapshot.narrative
+             AND latest_dates.latest_date = snapshot.date
+            ORDER BY snapshot.momentum_score DESC, snapshot.narrative
+            """
+        ).fetchall()
+
+    def get_dashboard_status(self) -> dict[str, object]:
+        return {
+            "analyzed_posts": self._table_count("analyzed_posts"),
+            "signals": self._table_count("signal_history"),
+            "outcomes": self._table_count("signal_outcomes"),
+            "last_analysis_at": self._table_max("analyzed_posts", "analyzed_at"),
+            "last_signal_at": self._table_max("signal_history", "timestamp"),
+        }
+
+    def has_table(self, table: str) -> bool:
+        row = self.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        return row is not None
+
+    def _table_count(self, table: str) -> int:
+        if not self.has_table(table):
+            return 0
+        return int(self.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+    def _table_max(self, table: str, column: str):
+        if not self.has_table(table):
+            return None
+        return self.connection.execute(
+            f"SELECT MAX({column}) FROM {table}"
+        ).fetchone()[0]
+
     def close(self) -> None:
         self.connection.close()

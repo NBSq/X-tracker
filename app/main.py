@@ -146,6 +146,22 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep RSS mode running and poll continuously",
     )
+    parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="Start the built-in analytics dashboard",
+    )
+    parser.add_argument(
+        "--dashboard-host",
+        default="127.0.0.1",
+        help="Dashboard bind address",
+    )
+    parser.add_argument(
+        "--dashboard-port",
+        type=int,
+        default=8000,
+        help="Dashboard port",
+    )
     return parser.parse_args()
 
 
@@ -891,12 +907,36 @@ def run_rss(
         time.sleep(sleep_seconds)
 
 
+def run_dashboard(config: Config, host: str, port: int) -> None:
+    import uvicorn
+
+    from app.dashboard import create_app
+
+    logger.info("Dashboard available at http://%s:%d", host, port)
+    uvicorn.run(create_app(config.database_path), host=host, port=port)
+
+
 def main() -> None:
     configure_logging()
     args = parse_args()
 
     try:
         config = load_config()
+    except Exception:
+        logger.exception("Startup failed")
+        raise SystemExit(1)
+
+    if args.dashboard:
+        try:
+            run_dashboard(config, args.dashboard_host, args.dashboard_port)
+        except KeyboardInterrupt:
+            logger.info("Stopped")
+        except Exception:
+            logger.exception("Dashboard failed")
+            raise SystemExit(1)
+        return
+
+    try:
         db = Database(config.database_path)
         db.initialize()
         if args.reset_db:

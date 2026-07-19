@@ -15,20 +15,16 @@ The project supports real APIs, public RSS feeds, and a fully local mock-AI work
 - Calculate hype scores and 0-100 Narrative Momentum scores
 - Track narrative history, growth, recency, and importance in SQLite
 - Send HTML-formatted Telegram spike alerts, summaries, trends, and digests
+- Explore signals and performance in the built-in FastAPI analytics dashboard
 - Run a complete local MVP without X or OpenAI credentials
 
 ## Screenshots
 
-Screenshots are not committed yet. The recommended initial screenshot set is:
+### Analytics Dashboard
 
-| View | Description |
-| --- | --- |
-| Telegram spike alert | Hype score, confidence, action, top posts, and related narratives |
-| Daily digest | Top tokens, narratives, momentum, and important articles |
-| Local MVP console | Offline analysis and alert generation |
-| Trend report | 24-hour and 7-day narrative rankings |
+![Analytics dashboard overview](docs/screenshots/dashboard-overview.png)
 
-Place future images in `docs/screenshots/` and reference them here.
+The dashboard presents system health, latest signals, evaluated accuracy, momentum, top narratives, and top tokens from the existing SQLite database.
 
 ## Architecture
 
@@ -52,6 +48,7 @@ flowchart LR
     DB --> Momentum["Narrative Momentum"]
     DB --> History["Narrative History"]
     DB --> Outcomes["Signal Outcomes Engine"]
+    DB --> Dashboard["FastAPI Dashboard"]
 
     Hype -->|SignalCreated| Bus
     Outcomes -->|SignalEvaluated| Bus
@@ -59,6 +56,7 @@ flowchart LR
     Bus --> Performance["Performance Subscriber"]
     Bus --> Telegram["Telegram Subscriber"]
     Performance -->|PerformanceUpdated| Bus
+    Bus -. Optional live events .-> Dashboard
 
     Bus --> Alerts["Spike Alerts"]
     Momentum --> Reports["Trend Reports / Daily Digests"]
@@ -69,6 +67,7 @@ flowchart LR
     Telegram --> TelegramAPI["Telegram Bot API"]
     Reports --> Console
     Reports --> TelegramAPI
+    Dashboard --> Browser["Jinja2 + Bootstrap UI"]
 ```
 
 ### Internal Event Flow
@@ -132,6 +131,10 @@ app/
   ai/analyzer.py
   alerts/telegram.py
   db/database.py
+  dashboard/app.py
+  dashboard/service.py
+  dashboard/static/
+  dashboard/templates/
   events/bus.py
   events/models.py
   events/subscribers.py
@@ -205,6 +208,34 @@ python -m app.main --mode local --reset-db --summary
 ```
 
 This command reads 30 sample posts, performs deterministic analysis, stores results in SQLite, calculates scores, prints alerts, and produces a summary.
+
+## Analytics Dashboard
+
+Start the built-in dashboard against the SQLite database configured by `DATABASE_PATH`:
+
+```powershell
+python -m app.main --dashboard
+```
+
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000). Use another host or port when needed:
+
+```powershell
+python -m app.main --dashboard --dashboard-host 0.0.0.0 --dashboard-port 8080
+```
+
+The dashboard is read-only and provides these pages:
+
+- `/` overview
+- `/signals` latest signals and outcomes
+- `/performance` accuracy, confidence, momentum, and narrative results
+- `/narratives` 24-hour narrative rankings
+- `/tokens` 24-hour token rankings
+
+JSON endpoints are available at `/api/signals`, `/api/performance`, `/api/narratives`, `/api/tokens`, and `/api/status`. Pages poll these endpoints every 30 seconds, so collector and dashboard processes can share the same SQLite file without restarting the web server.
+
+The app factory accepts an optional `EventBus`, allowing an embedded dashboard to subscribe to `PerformanceUpdated` and `NarrativeDetected`. The standard CLI deployment remains database-driven so it also works as a separate process.
+
+The dashboard has no authentication. Keep the default localhost binding unless access is protected by a trusted reverse proxy or private network.
 
 ## Source Modes
 
@@ -485,7 +516,7 @@ pytest
 
 ## Roadmap
 
-- [ ] Add a web dashboard for narratives, tokens, and source activity
+- [x] Add a web dashboard for narratives, tokens, and source activity
 - [ ] Add configurable outcome scoring weights and multiple evaluation horizons
 - [ ] Add source-level reliability and influence weighting
 - [ ] Add semantic clustering for emerging narratives

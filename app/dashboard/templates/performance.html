@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Performance{% endblock %}
+{% block heading %}Performance{% endblock %}
+{% block content %}
+<section class="metric-grid mb-5" aria-label="Performance metrics">
+  <article class="metric-card"><span>Generated</span><strong id="metric-signals">{{ performance.signals_generated }}</strong></article>
+  <article class="metric-card"><span>Evaluated</span><strong id="metric-evaluated">{{ performance.signals_evaluated }}</strong></article>
+  <article class="metric-card accent"><span>Accuracy</span><strong id="metric-accuracy">{{ '%.1f'|format(performance.accuracy) }}%</strong></article>
+  <article class="metric-card"><span>Avg. confidence</span><strong id="metric-confidence">{{ '%.1f'|format(performance.average_confidence) }}/10</strong></article>
+</section>
+
+<section class="dashboard-section mb-5">
+  <div class="section-heading"><h2>Outcome distribution</h2></div>
+  <div class="outcome-strip" id="outcome-strip">
+    <div class="success"><strong>{{ performance.success }}</strong><span>Success</span></div>
+    <div class="neutral"><strong>{{ performance.neutral }}</strong><span>Neutral</span></div>
+    <div class="failed"><strong>{{ performance.failed }}</strong><span>Failed</span></div>
+    <div><strong>{{ '%+.1f'|format(performance.average_momentum_change) }}</strong><span>Avg. momentum change</span></div>
+  </div>
+</section>
+
+<div class="row g-5">
+  <section class="col-lg-6 dashboard-section">
+    <div class="section-heading"><h2>Best narratives</h2></div>
+    <div id="best-narratives" class="performance-list">{% for item in performance.best_narratives %}<div><strong>{{ item.name }}</strong><span>{{ '%+.1f'|format(item.average_momentum_change) }} momentum</span></div>{% else %}<p class="empty-state">Collecting outcomes.</p>{% endfor %}</div>
+  </section>
+  <section class="col-lg-6 dashboard-section">
+    <div class="section-heading"><h2>Worst narratives</h2></div>
+    <div id="worst-narratives" class="performance-list">{% for item in performance.worst_narratives %}<div><strong>{{ item.name }}</strong><span>{{ '%+.1f'|format(item.average_momentum_change) }} momentum</span></div>{% else %}<p class="empty-state">Collecting outcomes.</p>{% endfor %}</div>
+  </section>
+</div>
+{% endblock %}
