@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.db.database import Database
+from app.events.bus import EventBus
+from app.events.models import SignalEvaluated
 from app.scoring.hype_score import normalize_hype_score
 from app.scoring.momentum_score import calculate_momentum_score
 
@@ -46,6 +48,7 @@ def evaluate_pending_signals(
     db: Database,
     hours_after: int,
     thresholds: OutcomeThresholds,
+    event_bus: EventBus | None = None,
 ) -> int:
     evaluated = 0
     for signal in db.get_pending_signal_outcomes(hours_after):
@@ -87,7 +90,7 @@ def evaluate_pending_signals(
             if signal["mentions_count"] is None
             else ""
         )
-        db.save_signal_outcome(
+        event = SignalEvaluated(
             signal_id=int(signal["id"]),
             hours_after=hours_after,
             status=status,
@@ -96,5 +99,17 @@ def evaluate_pending_signals(
             momentum_change=momentum_change,
             notes=f"{baseline_note}Weighted change index: {change_index:.2f}",
         )
+        if event_bus is None:
+            db.save_signal_outcome(
+                signal_id=event.signal_id,
+                hours_after=event.hours_after,
+                status=event.status,
+                score_change=event.score_change,
+                mentions_change=event.mentions_change,
+                momentum_change=event.momentum_change,
+                notes=event.notes,
+            )
+        else:
+            event_bus.publish(event)
         evaluated += 1
     return evaluated

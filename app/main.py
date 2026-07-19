@@ -37,6 +37,8 @@ from app.alerts.telegram import (
 )
 from app.config import Config, load_config
 from app.db.database import Database
+from app.events import EventBus, NarrativeDetected, RSSFetched, SignalCreated
+from app.events.subscribers import register_default_subscribers
 from app.scoring.hype_score import (
     HypeCandidate,
     build_hype_signal,
@@ -164,7 +166,9 @@ def process_posts(
     config: Config,
     db: Database,
     telegram: TelegramAlerter | None,
+    event_bus: EventBus | None = None,
 ) -> None:
+    bus = event_bus or build_event_bus(db, telegram)
     logger.info("Loaded %d posts", len(posts))
     analyzed_count = 0
 
@@ -175,6 +179,14 @@ def process_posts(
         try:
             analysis = analyzer.analyze_post(post.text)
             db.save_analysis(post, analysis)
+            for narrative in analysis.narratives:
+                bus.publish(
+                    NarrativeDetected.create(
+                        post_id=post.id,
+                        narrative=narrative,
+                        importance=analysis.importance,
+                    )
+                )
             analyzed_count += 1
             logger.info("Analyzed @%s: %s", post.username, analysis.summary)
         except Exception:
@@ -182,8 +194,8 @@ def process_posts(
 
     logger.info("Saved %d new analyses", analyzed_count)
     db.save_narrative_score_history(db.get_recent_signal_stats())
-    evaluate_hype(config, db, telegram, analyzer)
-    evaluate_signal_outcomes(config, db)
+    evaluate_hype(config, db, telegram, analyzer, bus)
+    evaluate_signal_outcomes(config, db, bus)
     poll_telegram_performance(telegram, db)
 
 
@@ -192,6 +204,7 @@ def evaluate_hype(
     db: Database,
     telegram: TelegramAlerter | None,
     analyzer: Analyzer,
+    event_bus: EventBus | None = None,
 ) -> None:
     momentum_scores = build_momentum_scores(db)
     db.save_daily_momentum(momentum_scores)
@@ -230,7 +243,15 @@ def evaluate_hype(
         )
 
     for primary, merged in merge_alert_candidates(candidates):
-        send_candidate_alert(primary, merged, momentum_scores, analyzer, telegram, db)
+        send_candidate_alert(
+            primary,
+            merged,
+            momentum_scores,
+            analyzer,
+            telegram,
+            db,
+            event_bus,
+        )
 
 
 def merge_alert_candidates(
@@ -267,6 +288,7 @@ def send_candidate_alert(
     analyzer: Analyzer,
     telegram: TelegramAlerter | None,
     db: Database,
+    event_bus: EventBus | None = None,
 ) -> None:
     signal = primary.candidate.signal
     merged_signal = merged.candidate.signal if merged else None
@@ -357,57 +379,21 @@ def send_candidate_alert(
     )
 
     logger.warning("\n%s", format_hype_alert(alert))
-    db.save_signal_history(**build_signal_history_record(alert))
-    if telegram:
-        try:
-            telegram.send_hype_alert(alert)
-            logger.info("Telegram alert sent for %s", combined_name)
-        except Exception:
-            logger.exception("Telegram alert failed for %s", combined_name)
-
-    for item in (signal, merged_signal):
-        if item is None:
-            continue
-        db.save_alert(
-            item.kind,
-            item.name,
-            item.hype_score,
-            item.mentions_count,
-            item.average_importance,
-        )
+    bus = event_bus or build_event_bus(db, telegram)
+    bus.publish(SignalCreated.from_alert(alert))
 
 
 def build_signal_history_record(alert: HypeAlert) -> dict:
-    signals = [alert.signal]
-    if alert.merged_signal is not None:
-        signals.append(alert.merged_signal)
-    token = next((item.name for item in signals if item.kind == "token"), None)
-    narrative = next((item.name for item in signals if item.kind == "narrative"), None)
-    if token and narrative:
-        signal_type = "token + narrative"
-    elif token:
-        signal_type = "token"
-    else:
-        signal_type = "narrative"
-    momentum_score = max((item.score for item in alert.momentum), default=0)
-    return {
-        "signal_type": signal_type,
-        "token": token,
-        "narrative": narrative,
-        "hype_score": normalize_hype_score(
-            alert.merged_hype_score
-            if alert.merged_hype_score is not None
-            else alert.signal.hype_score
-        ),
-        "momentum_score": momentum_score,
-        "confidence": alert.insight.confidence,
-        "action": alert.insight.action,
-        "mentions_count": (
-            alert.baseline_mentions_count
-            if alert.baseline_mentions_count is not None
-            else alert.signal.mentions_count
-        ),
-    }
+    return SignalCreated.from_alert(alert).history_record()
+
+
+def build_event_bus(
+    db: Database,
+    telegram: TelegramAlerter | None = None,
+) -> EventBus:
+    event_bus = EventBus()
+    register_default_subscribers(event_bus, db, telegram)
+    return event_bus
 
 
 def build_telegram(config: Config, disabled: bool = False) -> TelegramAlerter | None:
@@ -710,11 +696,16 @@ def outcome_thresholds(config: Config) -> OutcomeThresholds:
     )
 
 
-def evaluate_signal_outcomes(config: Config, db: Database) -> int:
+def evaluate_signal_outcomes(
+    config: Config,
+    db: Database,
+    event_bus: EventBus | None = None,
+) -> int:
     evaluated = evaluate_pending_signals(
         db,
         hours_after=config.outcome_evaluation_hours,
         thresholds=outcome_thresholds(config),
+        event_bus=event_bus,
     )
     if evaluated:
         logger.info("Evaluated %d signal outcomes", evaluated)
@@ -757,7 +748,7 @@ def print_and_send_outcome_report(
     db: Database,
     telegram: TelegramAlerter | None,
 ) -> None:
-    evaluate_signal_outcomes(config, db)
+    evaluate_signal_outcomes(config, db, build_event_bus(db, telegram))
     report = build_outcome_report(db)
     logger.info("\n%s", format_outcome_report(report))
     if telegram:
@@ -870,7 +861,10 @@ def run_rss_once(
     narratives = load_json_list(config.narratives_path, "narratives")
     posts = RSSClient().fetch_recent_posts(feeds, config.rss_articles_per_feed)
     analyzer = build_analyzer(config, narratives, mock_ai)
-    process_posts(posts, analyzer, config, db, build_telegram(config, no_telegram))
+    telegram = build_telegram(config, no_telegram)
+    event_bus = build_event_bus(db, telegram)
+    event_bus.publish(RSSFetched.create(posts, len(feeds)))
+    process_posts(posts, analyzer, config, db, telegram, event_bus)
 
 
 def run_rss(

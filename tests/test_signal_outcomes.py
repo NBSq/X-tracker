@@ -5,6 +5,9 @@ from pathlib import Path
 
 from app.ai.analyzer import AnalysisResult
 from app.db.database import Database
+from app.events.bus import EventBus
+from app.events.models import SignalEvaluated
+from app.events.subscribers import SignalOutcomeStorage
 from app.scoring.signal_outcomes import (
     OutcomeThresholds,
     classify_outcome,
@@ -99,10 +102,15 @@ class SignalOutcomeTests(unittest.TestCase):
             )
         self.db.connection.commit()
 
+        events = []
+        event_bus = EventBus()
+        event_bus.subscribe(SignalEvaluated, SignalOutcomeStorage(self.db, event_bus))
+        event_bus.subscribe(SignalEvaluated, events.append)
         first = evaluate_pending_signals(
             self.db,
             hours_after=24,
             thresholds=OutcomeThresholds(),
+            event_bus=event_bus,
         )
         second = evaluate_pending_signals(
             self.db,
@@ -116,6 +124,7 @@ class SignalOutcomeTests(unittest.TestCase):
 
         self.assertEqual(first, 1)
         self.assertEqual(second, 0)
+        self.assertEqual(len(events), 1)
         self.assertEqual(outcome["status"], "SUCCESS")
         self.assertEqual(outcome["mentions_change"], 2)
         self.assertGreater(outcome["score_change"], 0)

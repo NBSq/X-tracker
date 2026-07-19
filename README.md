@@ -39,28 +39,51 @@ flowchart LR
     Local["Local Sample Posts"] --> Sources
 
     Sources --> Posts["Shared Post Model"]
+    Sources -->|RSSFetched| Bus["Internal Event Bus"]
     Posts --> Analyzer{"Analyzer"}
     Analyzer --> OpenAI["OpenAI Structured Output"]
     Analyzer --> MockAI["Mock AI Keyword Rules"]
 
     OpenAI --> DB[("SQLite")]
     MockAI --> DB
+    Analyzer -->|NarrativeDetected| Bus
 
     DB --> Hype["Hype Scoring"]
     DB --> Momentum["Narrative Momentum"]
     DB --> History["Narrative History"]
     DB --> Outcomes["Signal Outcomes Engine"]
 
-    Hype --> Alerts["Spike Alerts"]
+    Hype -->|SignalCreated| Bus
+    Outcomes -->|SignalEvaluated| Bus
+    Bus --> Storage["Database Subscriber"]
+    Bus --> Performance["Performance Subscriber"]
+    Bus --> Telegram["Telegram Subscriber"]
+    Performance -->|PerformanceUpdated| Bus
+
+    Bus --> Alerts["Spike Alerts"]
     Momentum --> Reports["Trend Reports / Daily Digests"]
     History --> Reports
     Outcomes --> Reports
 
     Alerts --> Console["Console Logging"]
-    Alerts --> Telegram["Telegram Bot API"]
+    Telegram --> TelegramAPI["Telegram Bot API"]
     Reports --> Console
-    Reports --> Telegram
+    Reports --> TelegramAPI
 ```
+
+### Internal Event Flow
+
+The application uses a synchronous, typed, in-process event bus with no external dependencies. Publishers call `publish(event)`, while components register handlers with `subscribe(event_type, handler)`. Handlers run in registration order during the same process, keeping the MVP deterministic and easy to test.
+
+| Event | Published when | Current consumers |
+| --- | --- | --- |
+| `RSSFetched` | An RSS cycle returns shared posts | Extension point for source telemetry |
+| `NarrativeDetected` | Analysis detects a narrative in a post | Extension point for dashboards and APIs |
+| `SignalCreated` | Hype evaluation creates an alert | SQLite alert storage, performance tracking, Telegram |
+| `SignalEvaluated` | The outcomes engine evaluates a mature signal | SQLite outcome storage, performance updates |
+| `PerformanceUpdated` | Signal or outcome performance changes | Extension point for dashboards and REST APIs |
+
+The bus is intentionally transport-neutral. Future Dashboard, REST API, websocket, or audit-log adapters can subscribe without changing scoring and analysis code. Existing public helpers remain callable without supplying a bus; they create and register the default subscribers automatically.
 
 ## Scoring
 
@@ -109,6 +132,9 @@ app/
   ai/analyzer.py
   alerts/telegram.py
   db/database.py
+  events/bus.py
+  events/models.py
+  events/subscribers.py
   scoring/hype_score.py
   scoring/momentum_score.py
   scoring/signal_outcomes.py

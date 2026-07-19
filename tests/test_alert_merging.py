@@ -8,6 +8,7 @@ from app.main import (
     merge_alert_candidates,
     send_candidate_alert,
 )
+from app.events import EventBus, SignalCreated
 from app.scoring.momentum_score import NarrativeMomentum
 from app.scoring.hype_score import HypeCandidate, HypeSignal, should_merge_candidates
 
@@ -27,6 +28,46 @@ def make_candidate(kind: str, name: str, post_ids: set[str]) -> EnrichedCandidat
 
 
 class AlertMergingTests(unittest.TestCase):
+    def test_custom_event_bus_receives_signal_without_direct_side_effects(self) -> None:
+        rows = [
+            {
+                "post_id": "1",
+                "username": "analyst",
+                "text": "BTC momentum is rising",
+                "tokens_json": '["BTC"]',
+                "narratives_json": '["Bitcoin / macro"]',
+                "importance": 9,
+            }
+        ]
+        candidate = make_candidate("token", "BTC", {"1"})
+        candidate = EnrichedCandidate(candidate=candidate.candidate, rows=rows)
+        analyzer = Mock()
+        analyzer.explain_spike.return_value = SimpleNamespace(
+            explanation="Momentum increased",
+            action="research",
+            confidence=8,
+        )
+        telegram = Mock()
+        database = Mock()
+        events = []
+        event_bus = EventBus()
+        event_bus.subscribe(SignalCreated, events.append)
+
+        send_candidate_alert(
+            candidate,
+            None,
+            [],
+            analyzer,
+            telegram,
+            database,
+            event_bus,
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].token, "BTC")
+        database.save_signal_history.assert_not_called()
+        telegram.send_hype_alert.assert_not_called()
+
     def test_merges_token_and_narrative_with_mostly_same_posts(self) -> None:
         token = make_candidate("token", "BTC", {"1", "2", "3"})
         narrative = make_candidate("narrative", "Bitcoin / macro", {"1", "2", "4"})
