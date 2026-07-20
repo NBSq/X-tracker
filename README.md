@@ -79,6 +79,7 @@ The application uses a synchronous, typed, in-process event bus with no external
 | `RSSFetched` | An RSS cycle returns shared posts | Extension point for source telemetry |
 | `NarrativeDetected` | Analysis detects a narrative in a post | Extension point for dashboards and APIs |
 | `SignalCreated` | Hype evaluation creates an alert | SQLite alert storage, performance tracking, Telegram |
+| `SignalEvaluationRequested` | A configured evaluation window becomes eligible for processing | Outcome evaluator observability and future workers |
 | `SignalEvaluated` | The outcomes engine evaluates a mature signal | SQLite outcome storage, performance updates |
 | `PerformanceUpdated` | Signal or outcome performance changes | Extension point for dashboards and REST APIs |
 
@@ -193,6 +194,7 @@ HYPE_ALERT_THRESHOLD=25
 POSTS_PER_ACCOUNT=10
 RSS_ARTICLES_PER_FEED=10
 OUTCOME_EVALUATION_HOURS=24
+OUTCOME_EVALUATION_WINDOWS=24,72,168
 OUTCOME_SUCCESS_THRESHOLD=10
 OUTCOME_FAILURE_THRESHOLD=-10
 ```
@@ -228,10 +230,11 @@ The dashboard is read-only and provides these pages:
 - `/` overview
 - `/signals` latest signals and outcomes
 - `/performance` accuracy, confidence, momentum, and narrative results
+- `/outcomes` filterable signal outcome history and metric changes
 - `/narratives` 24-hour narrative rankings
 - `/tokens` 24-hour token rankings
 
-JSON endpoints are available at `/api/signals`, `/api/performance`, `/api/narratives`, `/api/tokens`, and `/api/status`. Pages poll these endpoints every 30 seconds, so collector and dashboard processes can share the same SQLite file without restarting the web server.
+JSON endpoints are available at `/api/signals`, `/api/performance`, `/api/outcomes`, `/api/outcomes/summary`, `/api/outcomes/{signal_id}`, `/api/narratives`, `/api/tokens`, and `/api/status`. Pages poll these endpoints every 30 seconds, so collector and dashboard processes can share the same SQLite file without restarting the web server. The Outcomes page filters by status, evaluation window, token, and narrative.
 
 The app factory accepts an optional `EventBus`, allowing an embedded dashboard to subscribe to `PerformanceUpdated` and `NarrativeDetected`. The standard CLI deployment remains database-driven so it also works as a separate process.
 
@@ -385,15 +388,37 @@ Generate an outcome report from mature saved signals:
 python -m app.main --outcome-report
 ```
 
-The outcomes engine runs automatically after each source-processing cycle. Once a signal reaches `OUTCOME_EVALUATION_HOURS`, it compares the signal baseline with current stored feed statistics:
+Evaluate due signals without producing or sending a report:
+
+```powershell
+python -m app.main --evaluate-signals
+```
+
+Reports can optionally be limited to recently evaluated outcomes:
+
+```powershell
+python -m app.main --outcome-report --outcome-period-hours 168
+```
+
+The outcomes engine also runs automatically after each source-processing cycle. At each window in `OUTCOME_EVALUATION_WINDOWS` (default `24,72,168` hours), it compares the saved signal baseline with current stored feed statistics:
 
 - Mention count
 - Normalized hype score
 - Momentum score
 
-The weighted change index classifies the signal as `SUCCESS`, `NEUTRAL`, or `FAILED`. `OUTCOME_SUCCESS_THRESHOLD` and `OUTCOME_FAILURE_THRESHOLD` control the boundaries. Each signal is evaluated once per configured horizon and persisted in `signal_outcomes`; repeated report commands do not create duplicate evaluations.
+Classification uses absolute metric changes and shared configurable boundaries:
 
-The outcome report includes totals, success rate, average mention and momentum changes, and best/worst narratives. It is sent to Telegram automatically when configured. While the tracker is running, sending `/performance` to the configured bot returns the same outcome summary; commands from other chat IDs are ignored.
+- `SUCCESS`: at least one metric change is greater than or equal to `OUTCOME_SUCCESS_THRESHOLD`.
+- `FAILED`: no metric reaches the success threshold and at least one metric change is less than or equal to `OUTCOME_FAILURE_THRESHOLD`.
+- `NEUTRAL`: all changes remain strictly between the two thresholds.
+
+Success has deterministic precedence when different metrics cross opposing boundaries. Missing current activity is treated as zero and recorded in the outcome notes. `OUTCOME_EVALUATION_HOURS` remains supported as a legacy single-window setting when `OUTCOME_EVALUATION_WINDOWS` is absent.
+
+Each `(signal_id, evaluation_window_hours)` pair is unique, so repeated runs cannot create duplicate evaluations. Existing `signal_outcomes` rows are migrated in place: the old horizon and change fields are retained, new baseline/current fields are added, and compatible values are backfilled from `signal_history` plus the legacy deltas.
+
+The outcome report includes totals, success rate, average hype, mention, and momentum changes, plus best/worst narratives ranked by success rate. It is sent to Telegram automatically when configured. While the tracker is running, sending `/performance` to the configured bot returns the same concise outcome summary; commands from other chat IDs are ignored.
+
+Signal Outcomes measure whether narrative or token attention continued in the tracker data. They do not use market prices and must not be interpreted as token price profitability or investment performance.
 
 ## Telegram Examples
 
@@ -510,14 +535,14 @@ pytest
 - Narrative score snapshots are stored after each processing run.
 - Generated alerts are stored in `signal_history` for performance reporting.
 - Mature signals are evaluated automatically and stored in `signal_outcomes`.
-- Existing databases are migrated in place with the signal mention baseline column.
+- Existing databases are migrated in place with signal mention baselines and the expanded multi-window outcome schema.
 - `--reset-db` clears analyses, alerts, narrative history, momentum snapshots, signal history, and signal outcomes.
 - Individual post-analysis, feed, OpenAI, and Telegram errors are logged without silently failing.
 
 ## Roadmap
 
 - [x] Add a web dashboard for narratives, tokens, and source activity
-- [ ] Add configurable outcome scoring weights and multiple evaluation horizons
+- [x] Add configurable multi-window signal outcome evaluation
 - [ ] Add source-level reliability and influence weighting
 - [ ] Add semantic clustering for emerging narratives
 - [ ] Add historical charts and momentum sparklines

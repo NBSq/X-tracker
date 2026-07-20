@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Signal Outcomes{% endblock %}
+{% block heading %}Signal Outcomes{% endblock %}
+{% block content %}
+<section class="metric-grid mb-4" aria-label="Outcome metrics">
+  <article class="metric-card"><span>Evaluated</span><strong id="outcome-total">{{ summary.signals_evaluated }}</strong></article>
+  <article class="metric-card accent"><span>Success rate</span><strong id="outcome-rate">{{ '%.1f'|format(summary.success_rate) }}%</strong></article>
+  <article class="metric-card"><span>Avg. hype change</span><strong id="outcome-hype">{{ '%+.1f'|format(summary.average_hype_change) }}</strong></article>
+  <article class="metric-card"><span>Avg. momentum change</span><strong id="outcome-momentum">{{ '%+.1f'|format(summary.average_momentum_change) }}</strong></article>
+</section>
+
+<form class="filter-bar mb-4" method="get" action="/outcomes">
+  <label>Status<select class="form-select form-select-sm" name="status"><option value="">All</option>{% for value in ['SUCCESS', 'NEUTRAL', 'FAILED'] %}<option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ value|capitalize }}</option>{% endfor %}</select></label>
+  <label>Window<select class="form-select form-select-sm" name="window"><option value="">All</option>{% for value in [24, 72, 168] %}<option value="{{ value }}" {% if filters.window == value %}selected{% endif %}>{{ value }}h</option>{% endfor %}</select></label>
+  <label>Token<input class="form-control form-control-sm" name="token" value="{{ filters.token or '' }}" placeholder="SOL"></label>
+  <label>Narrative<input class="form-control form-control-sm" name="narrative" value="{{ filters.narrative or '' }}" placeholder="Solana ecosystem"></label>
+  <button class="btn btn-sm btn-dark" type="submit">Apply</button>
+  <a class="btn btn-sm btn-outline-secondary" href="/outcomes">Clear</a>
+</form>
+
+<section class="dashboard-section">
+  <div class="section-heading"><h2>Recent evaluations</h2><span class="section-meta">Unique by signal and window</span></div>
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead><tr><th>Signal</th><th>Status</th><th>Window</th><th>Hype</th><th>Momentum</th><th>Mentions</th><th>Evaluated</th></tr></thead>
+      <tbody id="outcomes-body">{% for item in outcomes %}<tr><td><strong>{{ item.token or item.narrative or 'Unknown' }}</strong>{% if item.token and item.narrative %}<small>{{ item.narrative }}</small>{% endif %}</td><td><span class="outcome outcome-{{ item.status|lower }}">{{ item.status|capitalize }}</span></td><td>{{ item.evaluation_window_hours }}h</td><td>{{ '%+.1f'|format(item.hype_change) }}</td><td>{{ '%+.1f'|format(item.momentum_change) }}</td><td>{{ '%+d'|format(item.mentions_change) }}</td><td>{{ item.evaluated_at }}</td></tr>{% else %}<tr><td colspan="7" class="empty-state">No evaluated signals match these filters.</td></tr>{% endfor %}</tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

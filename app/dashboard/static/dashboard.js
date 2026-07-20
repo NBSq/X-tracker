@@ -60,6 +60,20 @@ function performanceList(items) {
   return items.map((item) => `<div><strong>${escapeHtml(item.name)}</strong><span>${item.average_momentum_change >= 0 ? "+" : ""}${item.average_momentum_change.toFixed(1)} momentum</span></div>`).join("");
 }
 
+function outcomeRows(items) {
+  if (!items.length) return '<tr><td colspan="7" class="empty-state">No evaluated signals match these filters.</td></tr>';
+  return items.map((item) => {
+    const primary = item.token || item.narrative || "Unknown";
+    const secondary = item.token && item.narrative ? `<small>${escapeHtml(item.narrative)}</small>` : "";
+    const change = (value) => `${value >= 0 ? "+" : ""}${Number(value).toFixed(1)}`;
+    return `<tr><td><strong>${escapeHtml(primary)}</strong>${secondary}</td>
+      <td><span class="outcome outcome-${item.status.toLowerCase()}">${escapeHtml(item.status.toLowerCase())}</span></td>
+      <td>${item.evaluation_window_hours}h</td><td>${change(item.hype_change)}</td>
+      <td>${change(item.momentum_change)}</td><td>${item.mentions_change >= 0 ? "+" : ""}${item.mentions_change}</td>
+      <td>${escapeHtml(item.evaluated_at)}</td></tr>`;
+  }).join("");
+}
+
 async function refreshStatus() {
   const status = await getJson("/api/status");
   setText("system-status", status.status.charAt(0).toUpperCase() + status.status.slice(1));
@@ -87,6 +101,25 @@ async function refreshPerformance() {
   if (worst) worst.innerHTML = performanceList(data.worst_narratives);
 }
 
+async function refreshOutcomes() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.has("window")) {
+    params.set("evaluation_window_hours", params.get("window"));
+    params.delete("window");
+  }
+  const suffix = params.toString() ? `?${params}` : "";
+  const [data, summary] = await Promise.all([
+    getJson(`/api/outcomes${suffix}`),
+    getJson("/api/outcomes/summary"),
+  ]);
+  setText("outcome-total", summary.signals_evaluated);
+  setText("outcome-rate", `${summary.success_rate.toFixed(1)}%`);
+  setText("outcome-hype", `${summary.average_hype_change >= 0 ? "+" : ""}${summary.average_hype_change.toFixed(1)}`);
+  setText("outcome-momentum", `${summary.average_momentum_change >= 0 ? "+" : ""}${summary.average_momentum_change.toFixed(1)}`);
+  const body = document.getElementById("outcomes-body");
+  if (body) body.innerHTML = outcomeRows(data.outcomes);
+}
+
 async function refreshRankings(kind, target = "rankings-body") {
   const data = await getJson(`/api/${kind}`);
   const items = data[kind];
@@ -100,6 +133,7 @@ async function refreshPage() {
   if (page === "overview") tasks.push(refreshSignals(8), refreshPerformance(), refreshRankings("narratives", "narratives-list"), refreshRankings("tokens", "tokens-list"));
   if (page === "signals") tasks.push(refreshSignals());
   if (page === "performance") tasks.push(refreshPerformance());
+  if (page === "outcomes") tasks.push(refreshOutcomes());
   if (page === "narratives" || page === "tokens") tasks.push(refreshRankings(page));
   try {
     await Promise.all(tasks);

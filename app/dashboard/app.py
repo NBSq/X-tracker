@@ -85,6 +85,35 @@ def create_app(
             status=service.status(),
         )
 
+    @app.get("/outcomes", response_class=HTMLResponse)
+    def outcomes_page(
+        request: Request,
+        status: str | None = Query(default=None, pattern="^(SUCCESS|NEUTRAL|FAILED)$"),
+        window: int | None = Query(default=None, ge=1),
+        token: str | None = None,
+        narrative: str | None = None,
+    ):
+        filters = {
+            "status": status,
+            "window": window,
+            "token": token,
+            "narrative": narrative,
+        }
+        return render(
+            request,
+            "outcomes.html",
+            "outcomes",
+            outcomes=service.outcomes(
+                status=status,
+                evaluation_window_hours=window,
+                token=token,
+                narrative=narrative,
+            ),
+            summary=service.outcome_summary(),
+            filters=filters,
+            status=service.status(),
+        )
+
     @app.get("/narratives", response_class=HTMLResponse)
     def narratives_page(request: Request):
         return render(
@@ -116,6 +145,34 @@ def create_app(
     @app.get("/api/performance")
     def performance_api():
         return service.performance()
+
+    @app.get("/api/outcomes")
+    def outcomes_api(
+        limit: int = Query(default=100, ge=1, le=500),
+        status: str | None = Query(default=None, pattern="^(SUCCESS|NEUTRAL|FAILED)$"),
+        evaluation_window_hours: int | None = Query(default=None, ge=1),
+        token: str | None = None,
+        narrative: str | None = None,
+        period_hours: int | None = Query(default=None, ge=1),
+    ):
+        return {"outcomes": service.outcomes(
+            limit=limit,
+            status=status,
+            evaluation_window_hours=evaluation_window_hours,
+            token=token,
+            narrative=narrative,
+            period_hours=period_hours,
+        )}
+
+    @app.get("/api/outcomes/summary")
+    def outcomes_summary_api(
+        period_hours: int | None = Query(default=None, ge=1),
+    ):
+        return service.outcome_summary(period_hours)
+
+    @app.get("/api/outcomes/{signal_id}")
+    def signal_outcomes_api(signal_id: int):
+        return {"signal_id": signal_id, "outcomes": service.outcomes(signal_id=signal_id)}
 
     @app.get("/api/narratives")
     def narratives_api(limit: int = Query(default=25, ge=1, le=100)):

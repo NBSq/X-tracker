@@ -69,6 +69,7 @@ class DashboardTests(unittest.TestCase):
             ("/", "Overview"),
             ("/signals", "Signals"),
             ("/performance", "Performance"),
+            ("/outcomes", "Signal Outcomes"),
             ("/narratives", "Narratives"),
             ("/tokens", "Tokens"),
         ):
@@ -94,6 +95,31 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(data["signals_evaluated"], 1)
         self.assertEqual(data["accuracy"], 100.0)
         self.assertEqual(data["best_narratives"][0]["name"], "Solana ecosystem")
+
+    def test_outcome_endpoints_return_summary_detail_and_filters(self) -> None:
+        outcomes = self.client.get(
+            "/api/outcomes?status=SUCCESS&evaluation_window_hours=24&token=SOL"
+        ).json()["outcomes"]
+        summary = self.client.get("/api/outcomes/summary").json()
+        detail = self.client.get("/api/outcomes/1").json()
+
+        self.assertEqual(len(outcomes), 1)
+        self.assertEqual(outcomes[0]["status"], "SUCCESS")
+        self.assertEqual(outcomes[0]["original_hype_score"], 72.0)
+        self.assertEqual(outcomes[0]["current_hype_score"], 84.0)
+        self.assertEqual(summary["signals_evaluated"], 1)
+        self.assertEqual(summary["success_rate"], 100.0)
+        self.assertEqual(summary["average_hype_change"], 12.0)
+        self.assertEqual(detail["signal_id"], 1)
+        self.assertEqual(len(detail["outcomes"]), 1)
+
+    def test_outcomes_dashboard_renders_filters_and_data(self) -> None:
+        response = self.client.get("/outcomes?status=SUCCESS&window=24&token=SOL")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Recent evaluations", response.text)
+        self.assertIn("Solana ecosystem", response.text)
+        self.assertIn('value="SUCCESS" selected', response.text)
 
     def test_narrative_and_token_endpoints_use_recent_analysis(self) -> None:
         narratives = self.client.get("/api/narratives").json()["narratives"]
@@ -123,6 +149,7 @@ class DashboardTests(unittest.TestCase):
     def test_api_limits_are_validated(self) -> None:
         self.assertEqual(self.client.get("/api/signals?limit=0").status_code, 422)
         self.assertEqual(self.client.get("/api/tokens?limit=101").status_code, 422)
+        self.assertEqual(self.client.get("/api/outcomes?status=UNKNOWN").status_code, 422)
 
     def test_empty_legacy_database_is_served_without_migration(self) -> None:
         empty_path = Path(self.temp_dir.name) / "empty.sqlite3"

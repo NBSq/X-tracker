@@ -48,7 +48,7 @@ from app.scoring.hype_score import (
 )
 from app.scoring.momentum_score import NarrativeMomentum, calculate_momentum_score
 from app.scoring.opportunity_score import build_opportunity
-from app.scoring.signal_outcomes import OutcomeThresholds, evaluate_pending_signals
+from app.scoring.signal_outcomes import OutcomeEvaluator, OutcomeThresholds
 from app.sources.local_client import load_sample_posts
 from app.sources.rss_client import RSSClient, load_rss_feeds
 from app.sources.x_client import XClient, XPost
@@ -74,6 +74,13 @@ class Analyzer(Protocol):
         related_tokens: list[str],
         related_narratives: list[str],
     ) -> SpikeInsight: ...
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
 
 
 def configure_logging() -> None:
@@ -140,6 +147,16 @@ def parse_args() -> argparse.Namespace:
         "--outcome-report",
         action="store_true",
         help="Evaluate mature signals and print outcome statistics",
+    )
+    parser.add_argument(
+        "--evaluate-signals",
+        action="store_true",
+        help="Evaluate every saved signal whose configured outcome window is due",
+    )
+    parser.add_argument(
+        "--outcome-period-hours",
+        type=positive_int,
+        help="Limit the outcome report to evaluations from the last N hours",
     )
     parser.add_argument(
         "--watch",
@@ -717,19 +734,21 @@ def evaluate_signal_outcomes(
     db: Database,
     event_bus: EventBus | None = None,
 ) -> int:
-    evaluated = evaluate_pending_signals(
+    evaluated = OutcomeEvaluator(
         db,
-        hours_after=config.outcome_evaluation_hours,
         thresholds=outcome_thresholds(config),
         event_bus=event_bus,
-    )
+    ).evaluate_due(config.outcome_evaluation_windows)
     if evaluated:
         logger.info("Evaluated %d signal outcomes", evaluated)
     return evaluated
 
 
-def build_outcome_report(db: Database) -> SignalOutcomeReport:
-    summary = db.get_signal_outcome_summary()
+def build_outcome_report(
+    db: Database,
+    period_hours: int | None = None,
+) -> SignalOutcomeReport:
+    summary = db.get_signal_outcome_summary(period_hours=period_hours)
     signals_evaluated = int(summary["signals_evaluated"] or 0)
     success = int(summary["success"] or 0)
 
@@ -743,7 +762,10 @@ def build_outcome_report(db: Database) -> SignalOutcomeReport:
                     row["average_momentum_change"] or 0.0
                 ),
             )
-            for row in db.get_signal_outcome_narratives(order)
+            for row in db.get_signal_outcome_narratives(
+                order,
+                period_hours=period_hours,
+            )
         ]
 
     return SignalOutcomeReport(
@@ -756,6 +778,7 @@ def build_outcome_report(db: Database) -> SignalOutcomeReport:
         average_momentum_change=float(summary["average_momentum_change"] or 0.0),
         best_narratives=narrative_rows("DESC"),
         worst_narratives=narrative_rows("ASC"),
+        average_hype_change=float(summary["average_hype_change"] or 0.0),
     )
 
 
@@ -763,9 +786,10 @@ def print_and_send_outcome_report(
     config: Config,
     db: Database,
     telegram: TelegramAlerter | None,
+    period_hours: int | None = None,
 ) -> None:
     evaluate_signal_outcomes(config, db, build_event_bus(db, telegram))
-    report = build_outcome_report(db)
+    report = build_outcome_report(db, period_hours)
     logger.info("\n%s", format_outcome_report(report))
     if telegram:
         try:
@@ -951,11 +975,15 @@ def main() -> None:
             print_and_send_opportunity_report(db, build_telegram(config, args.no_telegram))
         elif args.performance_report:
             print_and_send_performance_report(db, build_telegram(config, args.no_telegram))
+        elif args.evaluate_signals:
+            evaluated = evaluate_signal_outcomes(config, db, build_event_bus(db))
+            logger.info("Signal evaluation complete: %d outcome(s) saved", evaluated)
         elif args.outcome_report:
             print_and_send_outcome_report(
                 config,
                 db,
                 build_telegram(config, args.no_telegram),
+                args.outcome_period_hours,
             )
         elif args.history_report:
             print_and_send_history_report(db, build_telegram(config, args.no_telegram))

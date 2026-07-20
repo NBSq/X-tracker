@@ -68,6 +68,10 @@ body { background: var(--canvas); color: var(--ink); font-family: Inter, "Segoe 
 .outcome-strip .neutral strong { color: var(--amber); }
 .outcome-strip .failed strong { color: var(--red); }
 .empty-state { color: var(--muted); text-align: center; padding: 32px !important; }
+.filter-bar { display: flex; align-items: end; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.filter-bar label { color: var(--muted); font-size: 11px; font-weight: 700; min-width: 130px; }
+.filter-bar .form-control, .filter-bar .form-select { margin-top: 5px; min-height: 32px; color: var(--ink); font-size: 12px; }
+.filter-bar .btn { min-height: 32px; }
 
 @media (max-width: 767px) {
   .app-shell { width: min(100% - 24px, 1180px); }
@@ -82,4 +86,6 @@ body { background: var(--canvas); color: var(--ink); font-family: Inter, "Segoe 
   .outcome-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .outcome-strip > div:nth-child(2) { border-right: 0; }
   .outcome-strip > div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  .filter-bar { align-items: stretch; flex-direction: column; }
+  .filter-bar label { width: 100%; }
 }

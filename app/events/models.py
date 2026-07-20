@@ -87,6 +87,11 @@ class SignalCreated:
 
 
 @dataclass(frozen=True)
+class SignalEvaluationRequested:
+    evaluation_window_hours: int
+
+
+@dataclass(frozen=True)
 class SignalEvaluated:
     signal_id: int
     hours_after: int
@@ -95,6 +100,22 @@ class SignalEvaluated:
     mentions_change: int
     momentum_change: float
     notes: str
+    outcome_id: int | None = None
+    evaluated_at: str | None = None
+    original_hype_score: float = 0.0
+    current_hype_score: float = 0.0
+    original_momentum_score: float = 0.0
+    current_momentum_score: float = 0.0
+    original_mentions: int = 0
+    current_mentions: int = 0
+
+    @property
+    def evaluation_window_hours(self) -> int:
+        return self.hours_after
+
+    @property
+    def hype_change(self) -> float:
+        return self.score_change
 
 
 @dataclass(frozen=True)

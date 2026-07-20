@@ -131,6 +131,7 @@ class SignalOutcomeReport:
     average_momentum_change: float
     best_narratives: list[OutcomeNarrative]
     worst_narratives: list[OutcomeNarrative]
+    average_hype_change: float = 0.0
 
 
 class TelegramAlerter:
@@ -676,14 +677,15 @@ def format_outcome_report(report: SignalOutcomeReport) -> str:
     return (
         "📈 Signal Outcomes\n\n"
         f"Signals evaluated: {report.signals_evaluated}\n"
-        f"Success: {report.success}\n"
+        f"Successful: {report.success}\n"
         f"Neutral: {report.neutral}\n"
         f"Failed: {report.failed}\n"
         f"Success rate: {report.success_rate:.0f}%\n\n"
-        f"Average mention change: {report.average_mention_change:+.1f}\n\n"
-        f"Average momentum change: {report.average_momentum_change:+.1f}\n\n"
-        f"Best narratives\n{best or 'None'}\n\n"
-        f"Worst narratives\n{worst or 'None'}"
+        f"Average hype change: {report.average_hype_change:+.1f}\n"
+        f"Average momentum change: {report.average_momentum_change:+.1f}\n"
+        f"Average mentions change: {report.average_mention_change:+.1f}\n\n"
+        f"Best-performing narratives:\n\n{best or 'None'}\n\n"
+        f"Worst-performing narratives:\n\n{worst or 'None'}"
     )
 
 
@@ -693,14 +695,15 @@ def format_telegram_outcome_report(report: SignalOutcomeReport) -> str:
     return (
         "📈 <b>Signal Outcomes</b>\n\n"
         f"<b>Signals evaluated:</b> {report.signals_evaluated}\n"
-        f"<b>Success:</b> {report.success}\n"
+        f"<b>Successful:</b> {report.success}\n"
         f"<b>Neutral:</b> {report.neutral}\n"
         f"<b>Failed:</b> {report.failed}\n"
         f"<b>Success rate:</b> {report.success_rate:.0f}%\n\n"
-        f"<b>Average mention change:</b> {report.average_mention_change:+.1f}\n\n"
-        f"<b>Average momentum change:</b> {report.average_momentum_change:+.1f}\n\n"
-        f"<b>Best narratives</b>\n{best or 'None'}\n\n"
-        f"<b>Worst narratives</b>\n{worst or 'None'}"
+        f"<b>Average hype change:</b> {report.average_hype_change:+.1f}\n"
+        f"<b>Average momentum change:</b> {report.average_momentum_change:+.1f}\n"
+        f"<b>Average mentions change:</b> {report.average_mention_change:+.1f}\n\n"
+        f"<b>Best-performing narratives</b>\n{best or 'None'}\n\n"
+        f"<b>Worst-performing narratives</b>\n{worst or 'None'}"
     )
 
 
@@ -712,9 +715,7 @@ def _format_outcome_narratives(
     for index, item in enumerate(narratives, start=1):
         name = escape(item.name) if html else item.name
         lines.append(
-            f"{index}. {name} — outcome {item.outcome_score:+.2f}, "
-            f"momentum {item.average_momentum_change:+.1f}, "
-            f"evaluated {item.evaluated_count}"
+            f"{index}. {name} — {item.outcome_score:.1f}%"
         )
     return "\n".join(lines)
 

@@ -52,6 +52,13 @@ class SignalOutcomeStorage:
             mentions_change=event.mentions_change,
             momentum_change=event.momentum_change,
             notes=event.notes,
+            evaluation_window_hours=event.evaluation_window_hours,
+            original_hype_score=event.original_hype_score,
+            current_hype_score=event.current_hype_score,
+            original_momentum_score=event.original_momentum_score,
+            current_momentum_score=event.current_momentum_score,
+            original_mentions=event.original_mentions,
+            current_mentions=event.current_mentions,
         )
         self.event_bus.publish(_performance_updated(self.db))
 

@@ -4,6 +4,7 @@ from app.events.models import (
     PerformanceUpdated,
     RSSFetched,
     SignalCreated,
+    SignalEvaluationRequested,
     SignalEvaluated,
 )
 
@@ -13,5 +14,6 @@ __all__ = [
     "PerformanceUpdated",
     "RSSFetched",
     "SignalCreated",
+    "SignalEvaluationRequested",
     "SignalEvaluated",
 ]

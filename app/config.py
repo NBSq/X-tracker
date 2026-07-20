@@ -27,6 +27,7 @@ class Config:
     narratives_path: Path
     sample_posts_path: Path
     rss_feeds_path: Path
+    outcome_evaluation_windows: tuple[int, ...] = (24, 72, 168)
 
 
 def _get_int_env(name: str, default: str) -> int:
@@ -43,8 +44,27 @@ def _get_float_env(name: str, default: str) -> float:
         raise RuntimeError(f"{name} must be a number") from exc
 
 
+def _get_int_tuple_env(name: str, default: str) -> tuple[int, ...]:
+    raw_values = os.getenv(name, default).split(",")
+    try:
+        values = tuple(dict.fromkeys(int(item.strip()) for item in raw_values))
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must contain comma-separated integers") from exc
+    if not values or any(value <= 0 for value in values):
+        raise RuntimeError(f"{name} must contain positive evaluation windows")
+    return values
+
+
 def load_config() -> Config:
     load_dotenv()
+
+    legacy_outcome_hours = _get_int_env("OUTCOME_EVALUATION_HOURS", "24")
+    windows_default = (
+        str(legacy_outcome_hours)
+        if "OUTCOME_EVALUATION_HOURS" in os.environ
+        and "OUTCOME_EVALUATION_WINDOWS" not in os.environ
+        else "24,72,168"
+    )
 
     return Config(
         x_bearer_token=os.getenv("X_BEARER_TOKEN"),
@@ -57,7 +77,11 @@ def load_config() -> Config:
         hype_alert_threshold=_get_float_env("HYPE_ALERT_THRESHOLD", "25"),
         posts_per_account=_get_int_env("POSTS_PER_ACCOUNT", "10"),
         rss_articles_per_feed=_get_int_env("RSS_ARTICLES_PER_FEED", "10"),
-        outcome_evaluation_hours=_get_int_env("OUTCOME_EVALUATION_HOURS", "24"),
+        outcome_evaluation_hours=legacy_outcome_hours,
+        outcome_evaluation_windows=_get_int_tuple_env(
+            "OUTCOME_EVALUATION_WINDOWS",
+            windows_default,
+        ),
         outcome_success_threshold=_get_float_env("OUTCOME_SUCCESS_THRESHOLD", "10"),
         outcome_failure_threshold=_get_float_env("OUTCOME_FAILURE_THRESHOLD", "-10"),
         accounts_path=BASE_DIR / "data" / "accounts.json",
