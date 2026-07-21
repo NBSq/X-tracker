@@ -5,6 +5,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Protocol
 
@@ -39,6 +40,7 @@ from app.config import Config, load_config
 from app.db.database import Database
 from app.events import EventBus, NarrativeDetected, RSSFetched, SignalCreated
 from app.events.subscribers import register_default_subscribers
+from app.export.csv_exporter import CSVExportResult, CSVExportService
 from app.scoring.hype_score import (
     HypeCandidate,
     build_hype_signal,
@@ -81,6 +83,13 @@ def positive_int(value: str) -> int:
     if parsed <= 0:
         raise argparse.ArgumentTypeError("value must be a positive integer")
     return parsed
+
+
+def iso_date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("date must use YYYY-MM-DD format") from exc
 
 
 def configure_logging() -> None:
@@ -159,6 +168,42 @@ def parse_args() -> argparse.Namespace:
         help="Limit the outcome report to evaluations from the last N hours",
     )
     parser.add_argument(
+        "--export-signals-csv",
+        action="store_true",
+        help="Export saved signals to CSV",
+    )
+    parser.add_argument(
+        "--export-outcomes-csv",
+        action="store_true",
+        help="Export evaluated signal outcomes to CSV",
+    )
+    parser.add_argument(
+        "--export-performance-csv",
+        action="store_true",
+        help="Export overall and narrative performance CSV files",
+    )
+    parser.add_argument(
+        "--export-csv",
+        choices=("signals", "outcomes", "performance", "all"),
+        help="Export one CSV dataset or all available datasets",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("exports"),
+        help="Directory for generated CSV files (default: exports)",
+    )
+    parser.add_argument(
+        "--from-date",
+        type=iso_date,
+        help="Include records on or after this date (YYYY-MM-DD)",
+    )
+    parser.add_argument(
+        "--to-date",
+        type=iso_date,
+        help="Include records on or before this date (YYYY-MM-DD)",
+    )
+    parser.add_argument(
         "--watch",
         action="store_true",
         help="Keep RSS mode running and poll continuously",
@@ -180,6 +225,45 @@ def parse_args() -> argparse.Namespace:
         help="Dashboard port",
     )
     return parser.parse_args()
+
+
+def requested_csv_exports(args: argparse.Namespace) -> tuple[str, ...]:
+    kinds = []
+    if args.export_signals_csv:
+        kinds.append("signals")
+    if args.export_outcomes_csv:
+        kinds.append("outcomes")
+    if args.export_performance_csv:
+        kinds.append("performance")
+    if args.export_csv == "all":
+        kinds.extend(("signals", "outcomes", "performance"))
+    elif args.export_csv:
+        kinds.append(args.export_csv)
+    return tuple(dict.fromkeys(kinds))
+
+
+def run_csv_exports(
+    db: Database,
+    kinds: tuple[str, ...],
+    output_dir: Path,
+    from_date: date | None = None,
+    to_date: date | None = None,
+) -> CSVExportResult:
+    result = CSVExportService(db, output_dir).export(kinds, from_date, to_date)
+    lines = ["CSV export complete", ""]
+    labels = (
+        ("signals", "Signals exported"),
+        ("outcomes", "Outcomes exported"),
+        ("performance", "Performance rows exported"),
+        ("narrative_performance", "Narrative performance rows exported"),
+    )
+    for kind, label in labels:
+        if any(item.kind == kind for item in result.files):
+            lines.append(f"{label}: {result.count_for(kind)}")
+    lines.extend(("", "Files created:"))
+    lines.extend(f"* {item.path}" for item in result.files)
+    logger.info("\n%s", "\n".join(lines))
+    return result
 
 
 def load_json_list(path: Path, key: str) -> list[str]:
@@ -971,7 +1055,16 @@ def main() -> None:
         raise SystemExit(1)
 
     try:
-        if args.top_opportunities:
+        export_kinds = requested_csv_exports(args)
+        if export_kinds:
+            run_csv_exports(
+                db,
+                export_kinds,
+                args.output_dir,
+                args.from_date,
+                args.to_date,
+            )
+        elif args.top_opportunities:
             print_and_send_opportunity_report(db, build_telegram(config, args.no_telegram))
         elif args.performance_report:
             print_and_send_performance_report(db, build_telegram(config, args.no_telegram))

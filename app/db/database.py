@@ -674,6 +674,8 @@ class Database:
         self,
         period_hours: int | None = None,
         evaluation_window_hours: int | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
     ) -> sqlite3.Row:
         conditions = []
         parameters: list[object] = []
@@ -683,6 +685,13 @@ class Database:
         if evaluation_window_hours is not None:
             conditions.append("evaluation_window_hours = ?")
             parameters.append(evaluation_window_hours)
+        self._append_date_filters(
+            conditions,
+            parameters,
+            "evaluated_at",
+            from_date,
+            to_date,
+        )
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         return self.connection.execute(
             f"""
@@ -740,13 +749,15 @@ class Database:
 
     def get_signal_outcomes(
         self,
-        limit: int = 100,
+        limit: int | None = 100,
         status: str | None = None,
         evaluation_window_hours: int | None = None,
         token: str | None = None,
         narrative: str | None = None,
         period_hours: int | None = None,
         signal_id: int | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
     ) -> list[sqlite3.Row]:
         if status is not None and status not in {"SUCCESS", "NEUTRAL", "FAILED"}:
             raise ValueError(f"Unsupported outcome status: {status}")
@@ -765,8 +776,18 @@ class Database:
         if period_hours is not None:
             conditions.append("outcome.evaluated_at >= datetime('now', ?)")
             parameters.append(f"-{period_hours} hours")
+        self._append_date_filters(
+            conditions,
+            parameters,
+            "outcome.evaluated_at",
+            from_date,
+            to_date,
+        )
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        parameters.append(max(1, min(limit, 500)))
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = "LIMIT ?"
+            parameters.append(max(1, min(limit, 500)))
         return self.connection.execute(
             f"""
             SELECT
@@ -793,14 +814,28 @@ class Database:
             JOIN signal_history AS signal ON signal.id = outcome.signal_id
             {where_clause}
             ORDER BY outcome.evaluated_at DESC, outcome.id DESC
-            LIMIT ?
+            {limit_clause}
             """,
             parameters,
         ).fetchall()
 
-    def get_signal_performance_summary(self) -> sqlite3.Row:
+    def get_signal_performance_summary(
+        self,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> sqlite3.Row:
+        conditions: list[str] = []
+        parameters: list[object] = []
+        self._append_date_filters(
+            conditions,
+            parameters,
+            "timestamp",
+            from_date,
+            to_date,
+        )
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         return self.connection.execute(
-            """
+            f"""
             SELECT
                 COUNT(*) AS signals_generated,
                 SUM(CASE
@@ -810,8 +845,69 @@ class Database:
                 AVG(confidence) AS average_confidence,
                 AVG(momentum_score) AS average_momentum
             FROM signal_history
-            """
+            {where_clause}
+            """,
+            parameters,
         ).fetchone()
+
+    def get_narrative_performance_summary(
+        self,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> list[sqlite3.Row]:
+        signal_conditions = ["signal.narrative IS NOT NULL"]
+        signal_parameters: list[object] = []
+        self._append_date_filters(
+            signal_conditions,
+            signal_parameters,
+            "signal.timestamp",
+            from_date,
+            to_date,
+        )
+        outcome_conditions: list[str] = []
+        outcome_parameters: list[object] = []
+        self._append_date_filters(
+            outcome_conditions,
+            outcome_parameters,
+            "evaluated_at",
+            from_date,
+            to_date,
+        )
+        outcome_where = (
+            f"WHERE {' AND '.join(outcome_conditions)}" if outcome_conditions else ""
+        )
+        return self.connection.execute(
+            f"""
+            WITH filtered_outcomes AS (
+                SELECT *
+                FROM signal_outcomes
+                {outcome_where}
+            )
+            SELECT
+                signal.narrative,
+                COUNT(DISTINCT signal.id) AS signal_count,
+                COUNT(outcome.id) AS evaluated_count,
+                SUM(CASE WHEN outcome.status = 'SUCCESS' THEN 1 ELSE 0 END)
+                    AS successful_count,
+                SUM(CASE WHEN outcome.status = 'NEUTRAL' THEN 1 ELSE 0 END)
+                    AS neutral_count,
+                SUM(CASE WHEN outcome.status = 'FAILED' THEN 1 ELSE 0 END)
+                    AS failed_count,
+                CASE WHEN COUNT(outcome.id) > 0 THEN
+                    100.0 * SUM(CASE WHEN outcome.status = 'SUCCESS' THEN 1 ELSE 0 END)
+                        / COUNT(outcome.id)
+                END AS success_rate,
+                AVG(outcome.hype_change) AS average_hype_change,
+                AVG(outcome.momentum_change) AS average_momentum_change,
+                AVG(outcome.mentions_change) AS average_mentions_change
+            FROM signal_history AS signal
+            LEFT JOIN filtered_outcomes AS outcome ON outcome.signal_id = signal.id
+            WHERE {' AND '.join(signal_conditions)}
+            GROUP BY signal.narrative
+            ORDER BY success_rate DESC, evaluated_count DESC, signal.narrative
+            """,
+            [*outcome_parameters, *signal_parameters],
+        ).fetchall()
 
     def get_signal_performance_narratives(
         self,
@@ -836,7 +932,12 @@ class Database:
             (limit,),
         ).fetchall()
 
-    def get_latest_signals(self, limit: int = 50) -> list[sqlite3.Row]:
+    def get_signals(
+        self,
+        limit: int | None = 50,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> list[sqlite3.Row]:
         if not self.has_table("signal_history"):
             return []
         outcome_columns = (
@@ -863,6 +964,20 @@ class Database:
             if self.has_table("signal_outcomes")
             else ""
         )
+        conditions: list[str] = []
+        parameters: list[object] = []
+        self._append_date_filters(
+            conditions,
+            parameters,
+            "signal.timestamp",
+            from_date,
+            to_date,
+        )
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = "LIMIT ?"
+            parameters.append(limit)
         return self.connection.execute(
             f"""
             SELECT
@@ -870,11 +985,15 @@ class Database:
                 {outcome_columns}
             FROM signal_history AS signal
             {outcome_join}
+            {where_clause}
             ORDER BY signal.timestamp DESC, signal.id DESC
-            LIMIT ?
+            {limit_clause}
             """,
-            (limit,),
+            parameters,
         ).fetchall()
+
+    def get_latest_signals(self, limit: int = 50) -> list[sqlite3.Row]:
+        return self.get_signals(limit=limit)
 
     def get_latest_narrative_momentum(self) -> list[sqlite3.Row]:
         if not self.has_table("daily_momentum"):
@@ -910,6 +1029,21 @@ class Database:
             (table,),
         ).fetchone()
         return row is not None
+
+    @staticmethod
+    def _append_date_filters(
+        conditions: list[str],
+        parameters: list[object],
+        column: str,
+        from_date: str | None,
+        to_date: str | None,
+    ) -> None:
+        if from_date is not None:
+            conditions.append(f"{column} >= ?")
+            parameters.append(from_date)
+        if to_date is not None:
+            conditions.append(f"{column} < datetime(?, '+1 day')")
+            parameters.append(to_date)
 
     def _table_count(self, table: str) -> int:
         if not self.has_table(table):

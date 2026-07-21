@@ -139,6 +139,7 @@ app/
   events/bus.py
   events/models.py
   events/subscribers.py
+  export/csv_exporter.py
   scoring/hype_score.py
   scoring/momentum_score.py
   scoring/signal_outcomes.py
@@ -420,6 +421,44 @@ The outcome report includes totals, success rate, average hype, mention, and mom
 
 Signal Outcomes measure whether narrative or token attention continued in the tracker data. They do not use market prices and must not be interpreted as token price profitability or investment performance.
 
+## CSV Export
+
+Export stored data without starting X, RSS, OpenAI, or Telegram integrations:
+
+```powershell
+python -m app.main --export-signals-csv
+python -m app.main --export-outcomes-csv
+python -m app.main --export-performance-csv
+python -m app.main --export-csv all
+```
+
+Files are written to `exports/` by default. Use `--output-dir` to select another directory; missing directories are created automatically:
+
+```powershell
+python -m app.main --export-csv all --output-dir reports/csv
+```
+
+Calendar-date filters are inclusive. Signal exports filter by signal creation time, outcome exports filter by evaluation time, and performance exports apply the corresponding date range to each dataset:
+
+```powershell
+python -m app.main --export-csv all --from-date 2026-07-01 --to-date 2026-07-21
+```
+
+Generated files use timestamped names and never overwrite an existing export:
+
+```text
+signals_2026-07-21_180000.csv
+outcomes_2026-07-21_180000.csv
+performance_2026-07-21_180000.csv
+narrative_performance_2026-07-21_180000.csv
+```
+
+Signal columns contain the stored identity, creation time, token/narrative, hype, momentum, mentions, confidence, action, and latest outcome status. Outcome columns contain the signal and evaluation timestamps, evaluation window, baseline/current metrics, changes, status, and notes. No synthetic explanation is added because signal explanations are not persisted in SQLite.
+
+Performance export creates one overall summary row plus a separate narrative-level file with signal/evaluation counts, status counts, success rate, and average metric changes. Empty result sets still produce files with headers.
+
+CSV files use deterministic column ordering, standard CSV quoting, ISO 8601 timestamps, and UTF-8 with a byte-order mark for Microsoft Excel compatibility. Numeric values do not include display symbols such as `%`, `+`, or `/100`.
+
 ## Telegram Examples
 
 ### Hype Spike
@@ -496,7 +535,7 @@ Create a second task with:
 Run the test suite:
 
 ```powershell
-python -m unittest discover -s tests
+pytest
 ```
 
 Tests cover:
@@ -506,6 +545,8 @@ Tests cover:
 - Narrative history and growth calculations
 - Narrative Momentum scoring
 - Telegram formatting, HTML escaping, and payloads
+- Signal Outcomes evaluation, migration, API, and dashboard behavior
+- CSV headers, encoding, escaping, date filters, aggregate exports, and CLI behavior
 
 ## Contributing
 
