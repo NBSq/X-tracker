@@ -98,6 +98,18 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_signal_outcomes_signal_id
             ON signal_outcomes(signal_id);
+
+            CREATE INDEX IF NOT EXISTS idx_signal_history_timestamp
+            ON signal_history(timestamp);
+
+            CREATE INDEX IF NOT EXISTS idx_signal_history_narrative_timestamp
+            ON signal_history(narrative, timestamp);
+
+            CREATE INDEX IF NOT EXISTS idx_signal_history_token_timestamp
+            ON signal_history(token, timestamp);
+
+            CREATE INDEX IF NOT EXISTS idx_signal_outcomes_evaluated_at
+            ON signal_outcomes(evaluated_at);
             """
         )
         self._add_column_if_missing("signal_history", "mentions_count", "INTEGER")
@@ -759,6 +771,8 @@ class Database:
         from_date: str | None = None,
         to_date: str | None = None,
     ) -> list[sqlite3.Row]:
+        if not self.has_table("signal_outcomes") or not self.has_table("signal_history"):
+            return []
         if status is not None and status not in {"SUCCESS", "NEUTRAL", "FAILED"}:
             raise ValueError(f"Unsupported outcome status: {status}")
         conditions = []

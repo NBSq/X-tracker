@@ -3,17 +3,19 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.config import load_config
+from app.analytics.historical import HistoricalThresholds
 from app.events import EventBus, NarrativeDetected, PerformanceUpdated
 from app.dashboard.service import DashboardService
 
 
 DASHBOARD_DIR = Path(__file__).resolve().parent
+HISTORY_PERIODS = {"7d", "30d", "90d", "all"}
 
 
 class DashboardEventState:
@@ -28,8 +30,15 @@ def create_app(
     database_path: Path | None = None,
     event_bus: EventBus | None = None,
 ) -> FastAPI:
-    path = database_path or load_config().database_path
-    service = DashboardService(path)
+    config = load_config()
+    path = database_path or config.database_path
+    service = DashboardService(
+        path,
+        HistoricalThresholds(
+            growth_percent=config.history_growth_threshold,
+            minimum_activity=config.history_minimum_activity,
+        ),
+    )
     event_state = DashboardEventState()
     if event_bus is not None:
         event_bus.subscribe(PerformanceUpdated, event_state.handle)
@@ -55,6 +64,14 @@ def create_app(
             name=template,
             context={"page": page, **context},
         )
+
+    def valid_period(period: str) -> str:
+        if period not in HISTORY_PERIODS:
+            raise HTTPException(
+                status_code=400,
+                detail="period must be one of: 7d, 30d, 90d, all",
+            )
+        return period
 
     @app.get("/", response_class=HTMLResponse)
     def overview_page(request: Request):
@@ -82,6 +99,50 @@ def create_app(
             "performance.html",
             "performance",
             performance=service.performance(),
+            status=service.status(),
+        )
+
+    @app.get("/history", response_class=HTMLResponse)
+    def history_page(request: Request, period: str = "30d"):
+        selected = valid_period(period)
+        return render(
+            request,
+            "history.html",
+            "history",
+            history=service.history(selected),
+            selected_period=selected,
+            status=service.status(),
+        )
+
+    @app.get("/history/narratives/{name:path}", response_class=HTMLResponse)
+    def narrative_history_page(request: Request, name: str, period: str = "30d"):
+        selected = valid_period(period)
+        detail = service.history_detail("narrative", name, selected)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Narrative not found")
+        return render(
+            request,
+            "history_detail.html",
+            "history",
+            detail=detail,
+            kind="Narrative",
+            selected_period=selected,
+            status=service.status(),
+        )
+
+    @app.get("/history/tokens/{symbol:path}", response_class=HTMLResponse)
+    def token_history_page(request: Request, symbol: str, period: str = "30d"):
+        selected = valid_period(period)
+        detail = service.history_detail("token", symbol, selected)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Token not found")
+        return render(
+            request,
+            "history_detail.html",
+            "history",
+            detail=detail,
+            kind="Token",
+            selected_period=selected,
             status=service.status(),
         )
 
@@ -145,6 +206,44 @@ def create_app(
     @app.get("/api/performance")
     def performance_api():
         return service.performance()
+
+    @app.get("/api/history/summary")
+    def history_summary_api(period: str = "30d"):
+        data = service.history(valid_period(period))
+        return {
+            "period": data["period"],
+            "generated_at": data["generated_at"],
+            "summary": data["summary"],
+        }
+
+    @app.get("/api/history/timeline")
+    def history_timeline_api(period: str = "30d"):
+        data = service.history(valid_period(period))
+        return {"period": data["period"], "timeline": data["timeline"]}
+
+    @app.get("/api/history/narratives")
+    def history_narratives_api(period: str = "30d"):
+        data = service.history(valid_period(period))
+        return {"period": data["period"], "narratives": data["narratives"]}
+
+    @app.get("/api/history/tokens")
+    def history_tokens_api(period: str = "30d"):
+        data = service.history(valid_period(period))
+        return {"period": data["period"], "tokens": data["tokens"]}
+
+    @app.get("/api/history/narratives/{name:path}")
+    def history_narrative_detail_api(name: str, period: str = "30d"):
+        detail = service.history_detail("narrative", name, valid_period(period))
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Narrative not found")
+        return detail
+
+    @app.get("/api/history/tokens/{symbol:path}")
+    def history_token_detail_api(symbol: str, period: str = "30d"):
+        detail = service.history_detail("token", symbol, valid_period(period))
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Token not found")
+        return detail
 
     @app.get("/api/outcomes")
     def outcomes_api(

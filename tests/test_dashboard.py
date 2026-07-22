@@ -69,6 +69,7 @@ class DashboardTests(unittest.TestCase):
             ("/", "Overview"),
             ("/signals", "Signals"),
             ("/performance", "Performance"),
+            ("/history", "Historical Analytics"),
             ("/outcomes", "Signal Outcomes"),
             ("/narratives", "Narratives"),
             ("/tokens", "Tokens"),
@@ -121,6 +122,42 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Solana ecosystem", response.text)
         self.assertIn('value="SUCCESS" selected', response.text)
 
+    def test_history_endpoints_and_detail_views(self) -> None:
+        summary = self.client.get("/api/history/summary?period=30d")
+        timeline = self.client.get("/api/history/timeline?period=30d")
+        narratives = self.client.get("/api/history/narratives?period=30d")
+        tokens = self.client.get("/api/history/tokens?period=30d")
+        narrative_detail = self.client.get(
+            "/api/history/narratives/Solana%20ecosystem?period=30d"
+        )
+        token_detail = self.client.get("/api/history/tokens/SOL?period=30d")
+
+        self.assertEqual(summary.status_code, 200)
+        self.assertEqual(summary.json()["summary"]["total_signals"], 1)
+        self.assertGreaterEqual(len(timeline.json()["timeline"]), 1)
+        self.assertEqual(narratives.json()["narratives"][0]["name"], "Solana ecosystem")
+        self.assertEqual(tokens.json()["tokens"][0]["name"], "SOL")
+        self.assertEqual(narrative_detail.json()["analytics"]["name"], "Solana ecosystem")
+        self.assertEqual(token_detail.json()["analytics"]["name"], "SOL")
+
+        page = self.client.get("/history?period=30d")
+        detail_page = self.client.get(
+            "/history/narratives/Solana%20ecosystem?period=30d"
+        )
+        self.assertIn("Signal trend", page.text)
+        self.assertIn("Most consistent narratives", page.text)
+        self.assertIn("Historical profile", detail_page.text)
+
+    def test_history_rejects_invalid_period_and_missing_entity(self) -> None:
+        response = self.client.get("/api/history/summary?period=14d")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("period must be one of", response.json()["detail"])
+        self.assertEqual(
+            self.client.get("/api/history/tokens/UNKNOWN?period=30d").status_code,
+            404,
+        )
+
     def test_narrative_and_token_endpoints_use_recent_analysis(self) -> None:
         narratives = self.client.get("/api/narratives").json()["narratives"]
         tokens = self.client.get("/api/tokens").json()["tokens"]
@@ -162,6 +199,10 @@ class DashboardTests(unittest.TestCase):
             0,
         )
         self.assertEqual(empty_client.get("/").status_code, 200)
+        self.assertEqual(
+            empty_client.get("/api/history/summary").json()["summary"]["total_signals"],
+            0,
+        )
         empty_client.close()
 
 

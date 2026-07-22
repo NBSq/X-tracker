@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from app.analytics.historical import HistoricalAnalyticsService, HistoricalThresholds
 from app.db.database import Database
 from app.scoring.hype_score import normalize_hype_score
 
 
 class DashboardService:
-    def __init__(self, database_path: Path) -> None:
+    def __init__(
+        self,
+        database_path: Path,
+        history_thresholds: HistoricalThresholds | None = None,
+    ) -> None:
         self.database_path = database_path
+        self.history_thresholds = history_thresholds
 
     def status(self) -> dict[str, Any]:
         db = self._database()
@@ -120,6 +127,50 @@ class DashboardService:
             "narratives": self.narratives(6),
             "tokens": self.tokens(6),
         }
+
+    def history(self, period: str = "30d") -> dict[str, Any]:
+        db = self._database()
+        try:
+            data = HistoricalAnalyticsService(
+                db,
+                self.history_thresholds,
+            ).build_report(period).as_dict()
+            narratives = data["narratives"]
+            for trend in ("RISING", "NEW", "DECLINING", "INACTIVE"):
+                data[f"{trend.lower()}_narratives"] = [
+                    item for item in narratives if item["trend"] == trend
+                ]
+            data["most_successful_narratives"] = sorted(
+                (item for item in narratives if item["success_rate"] is not None),
+                key=lambda item: (item["success_rate"], item["evaluated_count"]),
+                reverse=True,
+            )[:5]
+            data["most_consistent_narratives"] = sorted(
+                narratives,
+                key=lambda item: (item["consistency_score"], item["signal_count"]),
+                reverse=True,
+            )[:5]
+            return data
+        finally:
+            db.close()
+
+    def history_detail(
+        self,
+        kind: str,
+        name: str,
+        period: str = "30d",
+    ) -> dict[str, Any] | None:
+        db = self._database()
+        try:
+            detail = HistoricalAnalyticsService(
+                db,
+                self.history_thresholds,
+            ).entity_detail(kind, name, period)
+            if detail is None:
+                return None
+            return asdict(detail)
+        finally:
+            db.close()
 
     def outcomes(
         self,

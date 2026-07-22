@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}{{ detail.analytics.name }} History{% endblock %}
+{% block heading %}{{ detail.analytics.name }}{% endblock %}
+{% block content %}
+<div class="detail-toolbar mb-4"><span class="type-label">{{ kind }}</span><span class="outcome outcome-{{ detail.analytics.trend|lower }}">{{ detail.analytics.trend|capitalize }}</span><a href="/history?period={{ selected_period }}">Back to history</a></div>
+
+<section class="metric-grid mb-5" aria-label="Entity historical metrics">
+  <article class="metric-card"><span>Signals</span><strong>{{ detail.analytics.signal_count }}</strong></article>
+  <article class="metric-card"><span>Evaluated</span><strong>{{ detail.analytics.evaluated_count }}</strong></article>
+  <article class="metric-card accent"><span>Success rate</span><strong>{{ '%.1f%%'|format(detail.analytics.success_rate) if detail.analytics.success_rate is not none else 'N/A' }}</strong></article>
+  <article class="metric-card"><span>Consistency</span><strong>{{ '%.1f'|format(detail.analytics.consistency_score) }}</strong></article>
+</section>
+
+<div class="row g-5 mb-5">
+  <section class="col-lg-6 dashboard-section">
+    <div class="section-heading"><h2>Historical profile</h2></div>
+    <dl class="detail-list"><div><dt>First seen</dt><dd>{{ detail.analytics.first_seen or 'N/A' }}</dd></div><div><dt>Last seen</dt><dd>{{ detail.analytics.last_seen or 'N/A' }}</dd></div><div><dt>Active days</dt><dd>{{ detail.analytics.active_days }}</dd></div><div><dt>Current rank</dt><dd>{{ detail.analytics.current_rank or 'N/A' }}</dd></div><div><dt>Previous rank</dt><dd>{{ detail.analytics.previous_period_rank or 'N/A' }}</dd></div><div><dt>Rank change</dt><dd>{{ detail.analytics.rank_change if detail.analytics.rank_change is not none else 'N/A' }}</dd></div></dl>
+  </section>
+  <section class="col-lg-6 dashboard-section">
+    <div class="section-heading"><h2>Growth</h2></div>
+    <dl class="detail-list"><div><dt>Signals</dt><dd>{{ '%+.1f%%'|format(detail.analytics.growth.signal_count_growth) if detail.analytics.growth.signal_count_growth is not none else 'N/A' }}</dd></div><div><dt>Hype</dt><dd>{{ '%+.1f%%'|format(detail.analytics.growth.average_hype_growth) if detail.analytics.growth.average_hype_growth is not none else 'N/A' }}</dd></div><div><dt>Momentum</dt><dd>{{ '%+.1f%%'|format(detail.analytics.growth.average_momentum_growth) if detail.analytics.growth.average_momentum_growth is not none else 'N/A' }}</dd></div><div><dt>Mentions</dt><dd>{{ '%+.1f%%'|format(detail.analytics.growth.mention_growth) if detail.analytics.growth.mention_growth is not none else 'N/A' }}</dd></div><div><dt>Success-rate change</dt><dd>{{ '%+.1f'|format(detail.analytics.growth.success_rate_change) if detail.analytics.growth.success_rate_change is not none else 'N/A' }}</dd></div></dl>
+  </section>
+</div>
+
+<section class="dashboard-section mb-5">
+  <div class="section-heading"><h2>Timeline</h2></div>
+  <div class="history-bars">{% for bucket in detail.timeline %}<div class="history-bar-row"><span>{{ bucket.bucket_start }}</span><i style="--bar-value: {{ [bucket.signal_count * 10, 100]|min }}%"></i><b>{{ bucket.signal_count }}</b></div>{% else %}<p class="empty-state">No period activity.</p>{% endfor %}</div>
+</section>
+
+<div class="row g-5">
+  <section class="col-lg-6 dashboard-section"><div class="section-heading"><h2>Recent signals</h2></div><div class="performance-list">{% for item in detail.recent_signals %}<div><strong>{{ item.timestamp }}</strong><span>Hype {{ '%.1f'|format(item.hype_score) }} · Momentum {{ '%.1f'|format(item.momentum_score) }}</span></div>{% else %}<p class="empty-state">No signals.</p>{% endfor %}</div></section>
+  <section class="col-lg-6 dashboard-section"><div class="section-heading"><h2>Recent outcomes</h2></div><div class="performance-list">{% for item in detail.recent_outcomes %}<div><strong>{{ item.status|capitalize }} · {{ item.evaluation_window_hours }}h</strong><span>{{ item.evaluated_at }} · Momentum {{ '%+.1f'|format(item.momentum_change) }}</span></div>{% else %}<p class="empty-state">No outcomes.</p>{% endfor %}</div></section>
+</div>
+{% endblock %}

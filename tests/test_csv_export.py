@@ -260,6 +260,15 @@ class CSVExportTests(unittest.TestCase):
         self.assertTrue(existing_args.mock_ai)
         self.assertEqual(requested_csv_exports(existing_args), ())
 
+        with patch.object(
+            sys,
+            "argv",
+            ["main.py", "--export-history-csv", "--period", "90d"],
+        ):
+            history_args = parse_args()
+        self.assertEqual(requested_csv_exports(history_args), ("history",))
+        self.assertEqual(history_args.period, "90d")
+
 
 if __name__ == "__main__":
     unittest.main()

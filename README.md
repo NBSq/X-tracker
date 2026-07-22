@@ -47,6 +47,7 @@ flowchart LR
     DB --> Hype["Hype Scoring"]
     DB --> Momentum["Narrative Momentum"]
     DB --> History["Narrative History"]
+    DB --> Historical["Historical Analytics"]
     DB --> Outcomes["Signal Outcomes Engine"]
     DB --> Dashboard["FastAPI Dashboard"]
 
@@ -61,6 +62,8 @@ flowchart LR
     Bus --> Alerts["Spike Alerts"]
     Momentum --> Reports["Trend Reports / Daily Digests"]
     History --> Reports
+    Historical --> Reports
+    Historical --> Dashboard
     Outcomes --> Reports
 
     Alerts --> Console["Console Logging"]
@@ -129,6 +132,7 @@ Momentum rankings appear in spike alerts, trend reports, and daily digests.
 app/
   main.py
   config.py
+  analytics/historical.py
   ai/analyzer.py
   alerts/telegram.py
   db/database.py
@@ -198,6 +202,8 @@ OUTCOME_EVALUATION_HOURS=24
 OUTCOME_EVALUATION_WINDOWS=24,72,168
 OUTCOME_SUCCESS_THRESHOLD=10
 OUTCOME_FAILURE_THRESHOLD=-10
+HISTORY_GROWTH_THRESHOLD=20
+HISTORY_MINIMUM_ACTIVITY=2
 ```
 
 When Telegram credentials are missing, the application continues normally and logs reports to the console.
@@ -232,10 +238,11 @@ The dashboard is read-only and provides these pages:
 - `/signals` latest signals and outcomes
 - `/performance` accuracy, confidence, momentum, and narrative results
 - `/outcomes` filterable signal outcome history and metric changes
+- `/history` period comparisons, classifications, timelines, and entity details
 - `/narratives` 24-hour narrative rankings
 - `/tokens` 24-hour token rankings
 
-JSON endpoints are available at `/api/signals`, `/api/performance`, `/api/outcomes`, `/api/outcomes/summary`, `/api/outcomes/{signal_id}`, `/api/narratives`, `/api/tokens`, and `/api/status`. Pages poll these endpoints every 30 seconds, so collector and dashboard processes can share the same SQLite file without restarting the web server. The Outcomes page filters by status, evaluation window, token, and narrative.
+JSON endpoints are available for signals, performance, outcomes, historical analytics, narratives, tokens, and system status. Pages poll these endpoints every 30 seconds, so collector and dashboard processes can share the same SQLite file without restarting the web server. The Outcomes page filters by status, evaluation window, token, and narrative. The History page selects `7d`, `30d`, `90d`, or `all` and links to narrative and token detail views.
 
 The app factory accepts an optional `EventBus`, allowing an embedded dashboard to subscribe to `PerformanceUpdated` and `NarrativeDetected`. The standard CLI deployment remains database-driven so it also works as a separate process.
 
@@ -357,13 +364,46 @@ The digest includes:
 
 Reports are sent to Telegram automatically when credentials are configured. Add `--no-telegram` for console-only output.
 
-Generate a seven-day Narrative Momentum comparison:
+### Historical Analytics
+
+Analyze stored signals and their latest outcome within the selected period:
 
 ```powershell
 python -m app.main --history-report
+python -m app.main --history-report --period 7d
+python -m app.main --history-report --period 30d
+python -m app.main --history-report --period 90d
+python -m app.main --history-report --period all
 ```
 
-Every processing run upserts one momentum snapshot per narrative for the current UTC date in the `daily_momentum` SQLite table. The history report compares today's score with the latest available snapshot on or before seven days ago.
+The default period is `30d`. Seven-day reports use calendar-day buckets, 30-day and 90-day reports use Monday-based calendar weeks, and all-time reports use calendar months. Current periods begin at UTC midnight and compare with the immediately preceding period of equal length. All-time reports have no artificial previous period, so comparison metrics are `null` or `N/A`.
+
+The report includes signal and outcome totals, success rate, average hype, momentum, confidence and outcome changes, growing and declining narratives, success rankings, consistency rankings, and recent buckets. Outcomes use the latest evaluation per signal inside the selected period so status counts remain mutually exclusive.
+
+Growth metrics compare signal count, summed stored mentions, average hype, average momentum, and success rate. Percentage growth is `null` when the previous value is missing or zero; success-rate change is expressed in percentage points.
+
+Trend classification is deterministic:
+
+- `NEW`: no previous-period signals, first seen in the current period, and at least `HISTORY_MINIMUM_ACTIVITY` current signals.
+- `INACTIVE`: no current signals and at least the minimum activity in the previous period.
+- `RISING`: at least one available signal, mention, hype, or momentum growth value reaches `HISTORY_GROWTH_THRESHOLD`, with none crossing the negative threshold.
+- `DECLINING`: at least one growth value crosses the negative threshold, with none reaching the positive threshold.
+- `STABLE`: changes remain inside the thresholds, comparison data is unavailable, or positive and negative threshold crossings conflict.
+
+Consistency is a transparent `0-100` heuristic, not financial reliability. Thirty percent comes from active-bucket coverage. Signal-count, hype, momentum, and success-rate stability contribute 20%, 15%, 15%, and 20%, using `1 / (1 + coefficient of variation)`. Stability components are multiplied by an evidence factor capped after three active buckets, preventing a single observation from appearing fully consistent.
+
+Historical API endpoints:
+
+```text
+GET /api/history/summary?period=30d
+GET /api/history/timeline?period=30d
+GET /api/history/narratives?period=30d
+GET /api/history/tokens?period=30d
+GET /api/history/narratives/{name}?period=30d
+GET /api/history/tokens/{symbol}?period=30d
+```
+
+Invalid periods return HTTP `400`. Detail responses include lifetime first/last seen timestamps, current-period metrics and growth, timeline buckets, latest scores, and recent signals and outcomes.
 
 Rank the strongest narrative opportunities from stored momentum history:
 
@@ -429,6 +469,7 @@ Export stored data without starting X, RSS, OpenAI, or Telegram integrations:
 python -m app.main --export-signals-csv
 python -m app.main --export-outcomes-csv
 python -m app.main --export-performance-csv
+python -m app.main --export-history-csv --period 30d
 python -m app.main --export-csv all
 ```
 
@@ -451,11 +492,17 @@ signals_2026-07-21_180000.csv
 outcomes_2026-07-21_180000.csv
 performance_2026-07-21_180000.csv
 narrative_performance_2026-07-21_180000.csv
+history_summary_2026-07-21_180000.csv
+history_timeline_2026-07-21_180000.csv
+narrative_history_2026-07-21_180000.csv
+token_history_2026-07-21_180000.csv
 ```
 
 Signal columns contain the stored identity, creation time, token/narrative, hype, momentum, mentions, confidence, action, and latest outcome status. Outcome columns contain the signal and evaluation timestamps, evaluation window, baseline/current metrics, changes, status, and notes. No synthetic explanation is added because signal explanations are not persisted in SQLite.
 
 Performance export creates one overall summary row plus a separate narrative-level file with signal/evaluation counts, status counts, success rate, and average metric changes. Empty result sets still produce files with headers.
+
+`--export-history-csv` reuses the same Excel-compatible writer and creates historical summary, timeline, narrative, and token files for the selected `--period`. Existing `--export-csv all` remains backward compatible and continues to mean signals, outcomes, and performance; historical export is explicit.
 
 CSV files use deterministic column ordering, standard CSV quoting, ISO 8601 timestamps, and UTF-8 with a byte-order mark for Microsoft Excel compatibility. Numeric values do not include display symbols such as `%`, `+`, or `/100`.
 
@@ -577,6 +624,7 @@ pytest
 - Generated alerts are stored in `signal_history` for performance reporting.
 - Mature signals are evaluated automatically and stored in `signal_outcomes`.
 - Existing databases are migrated in place with signal mention baselines and the expanded multi-window outcome schema.
+- Historical query indexes for signal timestamps, narrative/token plus timestamp, and outcome evaluation timestamps are added with `CREATE INDEX IF NOT EXISTS`.
 - `--reset-db` clears analyses, alerts, narrative history, momentum snapshots, signal history, and signal outcomes.
 - Individual post-analysis, feed, OpenAI, and Telegram errors are logged without silently failing.
 
@@ -584,9 +632,10 @@ pytest
 
 - [x] Add a web dashboard for narratives, tokens, and source activity
 - [x] Add configurable multi-window signal outcome evaluation
+- [x] Add period-aware historical analytics and detail views
 - [ ] Add source-level reliability and influence weighting
 - [ ] Add semantic clustering for emerging narratives
-- [ ] Add historical charts and momentum sparklines
+- [ ] Add richer interactive charts and momentum sparklines
 - [ ] Add PostgreSQL support for larger deployments
 - [ ] Add Docker and cross-platform service definitions
 - [ ] Add scheduled report configuration and multiple Telegram destinations
@@ -595,7 +644,7 @@ pytest
 
 ## Disclaimer
 
-This project is an experimental monitoring and research tool. Scores, summaries, and suggested actions are heuristic outputs and are not financial advice.
+This project is an experimental monitoring and research tool. Historical narrative performance measures attention and outcome continuation in stored tracker data, not token price profitability. Scores, summaries, and suggested actions are heuristic outputs and are not financial advice.
 
 ## License
 

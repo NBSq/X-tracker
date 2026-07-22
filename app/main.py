@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import Protocol
 
 from app.ai.analyzer import AnalysisResult, LocalAnalyzer, OpenAIAnalyzer, SpikeInsight
+from app.analytics.historical import (
+    HistoricalAnalyticsService,
+    HistoricalThresholds,
+    format_historical_report,
+)
 from app.alerts.telegram import (
     AlertPost,
     DailyDigest,
@@ -140,7 +145,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--history-report",
         action="store_true",
-        help="Compare today's narrative momentum with snapshots from seven days ago",
+        help="Print historical signal analytics",
+    )
+    parser.add_argument(
+        "--period",
+        choices=("7d", "30d", "90d", "all"),
+        default="30d",
+        help="Historical analytics period (default: 30d)",
     )
     parser.add_argument(
         "--top-opportunities",
@@ -181,6 +192,11 @@ def parse_args() -> argparse.Namespace:
         "--export-performance-csv",
         action="store_true",
         help="Export overall and narrative performance CSV files",
+    )
+    parser.add_argument(
+        "--export-history-csv",
+        action="store_true",
+        help="Export historical summary, timeline, narrative, and token CSV files",
     )
     parser.add_argument(
         "--export-csv",
@@ -235,6 +251,8 @@ def requested_csv_exports(args: argparse.Namespace) -> tuple[str, ...]:
         kinds.append("outcomes")
     if args.export_performance_csv:
         kinds.append("performance")
+    if args.export_history_csv:
+        kinds.append("history")
     if args.export_csv == "all":
         kinds.extend(("signals", "outcomes", "performance"))
     elif args.export_csv:
@@ -248,14 +266,29 @@ def run_csv_exports(
     output_dir: Path,
     from_date: date | None = None,
     to_date: date | None = None,
+    history_period: str = "30d",
+    history_thresholds: HistoricalThresholds | None = None,
 ) -> CSVExportResult:
-    result = CSVExportService(db, output_dir).export(kinds, from_date, to_date)
+    result = CSVExportService(
+        db,
+        output_dir,
+        history_thresholds=history_thresholds,
+    ).export(
+        kinds,
+        from_date,
+        to_date,
+        history_period,
+    )
     lines = ["CSV export complete", ""]
     labels = (
         ("signals", "Signals exported"),
         ("outcomes", "Outcomes exported"),
         ("performance", "Performance rows exported"),
         ("narrative_performance", "Narrative performance rows exported"),
+        ("history_summary", "Historical summaries exported"),
+        ("history_timeline", "Historical timeline rows exported"),
+        ("narrative_history", "Narrative history rows exported"),
+        ("token_history", "Token history rows exported"),
     )
     for kind, label in labels:
         if any(item.kind == kind for item in result.files):
@@ -718,6 +751,25 @@ def print_and_send_history_report(
             logger.exception("Telegram history report failed")
 
 
+def build_historical_analytics(
+    config: Config,
+    db: Database,
+    period: str,
+):
+    return HistoricalAnalyticsService(
+        db,
+        HistoricalThresholds(
+            growth_percent=config.history_growth_threshold,
+            minimum_activity=config.history_minimum_activity,
+        ),
+    ).build_report(period)
+
+
+def print_historical_analytics(config: Config, db: Database, period: str) -> None:
+    report = build_historical_analytics(config, db, period)
+    logger.info("\n%s", format_historical_report(report))
+
+
 def build_opportunity_report(db: Database, limit: int = 10) -> OpportunityReport:
     opportunities = []
     for row in db.get_opportunity_inputs():
@@ -1063,6 +1115,11 @@ def main() -> None:
                 args.output_dir,
                 args.from_date,
                 args.to_date,
+                args.period,
+                HistoricalThresholds(
+                    growth_percent=config.history_growth_threshold,
+                    minimum_activity=config.history_minimum_activity,
+                ),
             )
         elif args.top_opportunities:
             print_and_send_opportunity_report(db, build_telegram(config, args.no_telegram))
@@ -1079,7 +1136,7 @@ def main() -> None:
                 args.outcome_period_hours,
             )
         elif args.history_report:
-            print_and_send_history_report(db, build_telegram(config, args.no_telegram))
+            print_historical_analytics(config, db, args.period)
         elif args.daily_digest:
             print_and_send_daily_digest(db, build_telegram(config, args.no_telegram))
         elif args.trend_report:

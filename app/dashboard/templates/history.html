@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Historical Analytics{% endblock %}
+{% block heading %}Historical Analytics{% endblock %}
+{% block content %}
+<form class="period-control mb-4" method="get" action="/history">
+  <label for="history-period">Period</label>
+  <select class="form-select form-select-sm" id="history-period" name="period" onchange="this.form.submit()">
+    {% for value, label in [('7d', '7 days'), ('30d', '30 days'), ('90d', '90 days'), ('all', 'All time')] %}
+    <option value="{{ value }}" {% if selected_period == value %}selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+</form>
+
+<section class="metric-grid history-metrics mb-5" aria-label="Historical metrics">
+  <article class="metric-card"><span>Signals</span><strong id="history-signals">{{ history.summary.total_signals }}</strong></article>
+  <article class="metric-card"><span>Evaluated</span><strong id="history-evaluated">{{ history.summary.evaluated_signals }}</strong></article>
+  <article class="metric-card accent"><span>Success rate</span><strong id="history-success">{{ '%.1f'|format(history.summary.success_rate) }}%</strong></article>
+  <article class="metric-card"><span>Avg. hype</span><strong id="history-hype">{{ '%.1f'|format(history.summary.average_hype_score or 0) }}</strong></article>
+  <article class="metric-card"><span>Avg. momentum</span><strong id="history-momentum">{{ '%.1f'|format(history.summary.average_momentum_score or 0) }}</strong></article>
+  <article class="metric-card"><span>Avg. confidence</span><strong id="history-confidence">{{ '%.1f'|format(history.summary.average_confidence or 0) }}</strong></article>
+</section>
+
+<div class="history-chart-grid mb-5">
+  {% for key, title in [('signal_count', 'Signal trend'), ('success_rate', 'Success-rate trend'), ('average_hype_score', 'Hype trend'), ('average_momentum_score', 'Momentum trend')] %}
+  <section class="dashboard-section history-chart" data-history-metric="{{ key }}">
+    <div class="section-heading"><h2>{{ title }}</h2></div>
+    <div class="history-bars" data-history-bars>
+      {% for bucket in history.timeline[-8:] %}
+      {% set value = bucket[key] or 0 %}
+      <div class="history-bar-row"><span>{{ bucket.bucket_start }}</span><i style="--bar-value: {{ [value, 100]|min }}%"></i><b>{{ '%.1f'|format(value) if key != 'signal_count' else value }}</b></div>
+      {% else %}<p class="empty-state">Collecting history.</p>{% endfor %}
+    </div>
+  </section>
+  {% endfor %}
+</div>
+
+<div class="row g-5 mb-5 history-ranking-grid">
+  {% for title, items in [('Rising narratives', history.rising_narratives), ('New narratives', history.new_narratives), ('Declining narratives', history.declining_narratives), ('Inactive narratives', history.inactive_narratives)] %}
+  <section class="col-lg-6 dashboard-section">
+    <div class="section-heading"><h2>{{ title }}</h2></div>
+    <div class="performance-list" id="history-{{ title|lower|replace(' ', '-') }}">
+      {% for item in items %}
+      <div><strong><a href="/history/narratives/{{ item.name|urlencode }}?period={{ selected_period }}">{{ item.name }}</a></strong><span>{{ item.signal_count }} signals &middot; {{ item.trend|capitalize }}</span></div>
+      {% else %}<p class="empty-state">No matching narratives.</p>{% endfor %}
+    </div>
+  </section>
+  {% endfor %}
+</div>
+
+<div class="row g-5 mb-5 history-ranking-grid">
+  <section class="col-lg-4 dashboard-section">
+    <div class="section-heading"><h2>Most successful narratives</h2></div>
+    <div class="performance-list" id="history-most-successful">
+      {% for item in history.most_successful_narratives %}
+      <div><strong><a href="/history/narratives/{{ item.name|urlencode }}?period={{ selected_period }}">{{ item.name }}</a></strong><span>{{ '%.1f'|format(item.success_rate) }}% success</span></div>
+      {% else %}<p class="empty-state">Collecting outcomes.</p>{% endfor %}
+    </div>
+  </section>
+  <section class="col-lg-4 dashboard-section">
+    <div class="section-heading"><h2>Most consistent narratives</h2></div>
+    <div class="performance-list" id="history-most-consistent">
+      {% for item in history.most_consistent_narratives %}
+      <div><strong><a href="/history/narratives/{{ item.name|urlencode }}?period={{ selected_period }}">{{ item.name }}</a></strong><span>{{ '%.1f'|format(item.consistency_score) }} consistency</span></div>
+      {% else %}<p class="empty-state">Collecting history.</p>{% endfor %}
+    </div>
+  </section>
+  <section class="col-lg-4 dashboard-section">
+    <div class="section-heading"><h2>Top tokens</h2></div>
+    <div class="performance-list" id="history-top-tokens">
+      {% for item in history.tokens[:5] %}
+      <div><strong><a href="/history/tokens/{{ item.name|urlencode }}?period={{ selected_period }}">{{ item.name }}</a></strong><span>{{ item.signal_count }} signals &middot; {{ item.trend|capitalize }}</span></div>
+      {% else %}<p class="empty-state">No token history.</p>{% endfor %}
+    </div>
+  </section>
+</div>
+
+<section class="dashboard-section">
+  <div class="section-heading"><h2>Recent time buckets</h2><span class="section-meta">{{ history.period.label }}</span></div>
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead><tr><th>Period</th><th>Signals</th><th>Evaluated</th><th>Success</th><th>Avg. hype</th><th>Avg. momentum</th></tr></thead>
+      <tbody id="history-timeline-body">{% for bucket in history.timeline|reverse %}<tr><td><strong>{{ bucket.bucket_start }}</strong><small>to {{ bucket.bucket_end }}</small></td><td>{{ bucket.signal_count }}</td><td>{{ bucket.evaluated_count }}</td><td>{{ '%.1f%%'|format(bucket.success_rate) if bucket.success_rate is not none else 'N/A' }}</td><td>{{ '%.1f'|format(bucket.average_hype_score) if bucket.average_hype_score is not none else 'N/A' }}</td><td>{{ '%.1f'|format(bucket.average_momentum_score) if bucket.average_momentum_score is not none else 'N/A' }}</td></tr>{% else %}<tr><td colspan="6" class="empty-state">No historical data.</td></tr>{% endfor %}</tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

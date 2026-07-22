@@ -28,6 +28,8 @@ class Config:
     sample_posts_path: Path
     rss_feeds_path: Path
     outcome_evaluation_windows: tuple[int, ...] = (24, 72, 168)
+    history_growth_threshold: float = 20.0
+    history_minimum_activity: int = 2
 
 
 def _get_int_env(name: str, default: str) -> int:
@@ -88,4 +90,12 @@ def load_config() -> Config:
         narratives_path=BASE_DIR / "data" / "narratives.json",
         sample_posts_path=BASE_DIR / "data" / "sample_posts.json",
         rss_feeds_path=BASE_DIR / "data" / "rss_feeds.json",
+        history_growth_threshold=_get_float_env(
+            "HISTORY_GROWTH_THRESHOLD",
+            "20",
+        ),
+        history_minimum_activity=_get_int_env(
+            "HISTORY_MINIMUM_ACTIVITY",
+            "2",
+        ),
     )

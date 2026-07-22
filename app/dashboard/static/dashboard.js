@@ -120,6 +120,59 @@ async function refreshOutcomes() {
   if (body) body.innerHTML = outcomeRows(data.outcomes);
 }
 
+function historyBars(items, metric) {
+  if (!items.length) return '<p class="empty-state">Collecting history.</p>';
+  return items.slice(-8).map((item) => {
+    const value = Number(item[metric] || 0);
+    const label = metric === "signal_count" ? value : value.toFixed(1);
+    return `<div class="history-bar-row"><span>${escapeHtml(item.bucket_start)}</span><i style="--bar-value:${Math.min(Math.max(value, 0), 100)}%"></i><b>${label}</b></div>`;
+  }).join("");
+}
+
+function historyEntities(items, period, emptyText) {
+  if (!items.length) return `<p class="empty-state">${escapeHtml(emptyText)}</p>`;
+  return items.slice(0, 5).map((item) => `<div><strong><a href="/history/narratives/${encodeURIComponent(item.name)}?period=${encodeURIComponent(period)}">${escapeHtml(item.name)}</a></strong><span>${item.signal_count} signals · ${escapeHtml(item.trend.toLowerCase())}</span></div>`).join("");
+}
+
+function historyTimelineRows(items) {
+  if (!items.length) return '<tr><td colspan="6" class="empty-state">No historical data.</td></tr>';
+  return [...items].reverse().map((item) => `<tr><td><strong>${escapeHtml(item.bucket_start)}</strong><small>to ${escapeHtml(item.bucket_end)}</small></td><td>${item.signal_count}</td><td>${item.evaluated_count}</td><td>${item.success_rate == null ? "N/A" : `${item.success_rate.toFixed(1)}%`}</td><td>${item.average_hype_score == null ? "N/A" : item.average_hype_score.toFixed(1)}</td><td>${item.average_momentum_score == null ? "N/A" : item.average_momentum_score.toFixed(1)}</td></tr>`).join("");
+}
+
+async function refreshHistory() {
+  const period = new URLSearchParams(window.location.search).get("period") || "30d";
+  const [summaryData, timelineData, narrativeData] = await Promise.all([
+    getJson(`/api/history/summary?period=${encodeURIComponent(period)}`),
+    getJson(`/api/history/timeline?period=${encodeURIComponent(period)}`),
+    getJson(`/api/history/narratives?period=${encodeURIComponent(period)}`),
+  ]);
+  const summary = summaryData.summary;
+  setText("history-signals", summary.total_signals);
+  setText("history-evaluated", summary.evaluated_signals);
+  setText("history-success", `${summary.success_rate.toFixed(1)}%`);
+  setText("history-hype", Number(summary.average_hype_score || 0).toFixed(1));
+  setText("history-momentum", Number(summary.average_momentum_score || 0).toFixed(1));
+  setText("history-confidence", Number(summary.average_confidence || 0).toFixed(1));
+  document.querySelectorAll("[data-history-metric]").forEach((section) => {
+    const target = section.querySelector("[data-history-bars]");
+    if (target) target.innerHTML = historyBars(timelineData.timeline, section.dataset.historyMetric);
+  });
+  const narratives = narrativeData.narratives;
+  const groups = {rising: "RISING", new: "NEW", declining: "DECLINING", inactive: "INACTIVE"};
+  Object.entries(groups).forEach(([name, trend]) => {
+    const target = document.getElementById(`history-${name}-narratives`);
+    if (target) target.innerHTML = historyEntities(narratives.filter((item) => item.trend === trend), period, "No matching narratives.");
+  });
+  const successful = narratives.filter((item) => item.success_rate != null).sort((a, b) => b.success_rate - a.success_rate);
+  const consistent = [...narratives].sort((a, b) => b.consistency_score - a.consistency_score);
+  const successfulTarget = document.getElementById("history-most-successful");
+  const consistentTarget = document.getElementById("history-most-consistent");
+  if (successfulTarget) successfulTarget.innerHTML = successful.length ? successful.slice(0, 5).map((item) => `<div><strong>${escapeHtml(item.name)}</strong><span>${item.success_rate.toFixed(1)}% success</span></div>`).join("") : '<p class="empty-state">Collecting outcomes.</p>';
+  if (consistentTarget) consistentTarget.innerHTML = consistent.length ? consistent.slice(0, 5).map((item) => `<div><strong>${escapeHtml(item.name)}</strong><span>${item.consistency_score.toFixed(1)} consistency</span></div>`).join("") : '<p class="empty-state">Collecting history.</p>';
+  const timelineBody = document.getElementById("history-timeline-body");
+  if (timelineBody) timelineBody.innerHTML = historyTimelineRows(timelineData.timeline);
+}
+
 async function refreshRankings(kind, target = "rankings-body") {
   const data = await getJson(`/api/${kind}`);
   const items = data[kind];
@@ -134,6 +187,7 @@ async function refreshPage() {
   if (page === "signals") tasks.push(refreshSignals());
   if (page === "performance") tasks.push(refreshPerformance());
   if (page === "outcomes") tasks.push(refreshOutcomes());
+  if (page === "history") tasks.push(refreshHistory());
   if (page === "narratives" || page === "tokens") tasks.push(refreshRankings(page));
   try {
     await Promise.all(tasks);

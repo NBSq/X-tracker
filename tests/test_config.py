@@ -32,6 +32,19 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "positive evaluation windows"):
                 load_config()
 
+    def test_historical_threshold_configuration(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "HISTORY_GROWTH_THRESHOLD": "15.5",
+                "HISTORY_MINIMUM_ACTIVITY": "3",
+            },
+        ):
+            config = load_config()
+
+        self.assertEqual(config.history_growth_threshold, 15.5)
+        self.assertEqual(config.history_minimum_activity, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

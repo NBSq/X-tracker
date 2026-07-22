@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
+from app.analytics.historical import HistoricalAnalyticsService, HistoricalThresholds
 from app.db.database import Database
 
 
@@ -71,6 +72,68 @@ NARRATIVE_PERFORMANCE_COLUMNS = (
     "average_mentions_change",
 )
 
+HISTORY_SUMMARY_COLUMNS = (
+    "period",
+    "generated_at",
+    "total_signals",
+    "evaluated_signals",
+    "successful_signals",
+    "neutral_signals",
+    "failed_signals",
+    "success_rate",
+    "average_hype_score",
+    "average_momentum_score",
+    "average_confidence",
+    "average_hype_change",
+    "average_momentum_change",
+    "average_mentions_change",
+)
+
+HISTORY_TIMELINE_COLUMNS = (
+    "bucket_start",
+    "bucket_end",
+    "signal_count",
+    "evaluated_count",
+    "success_rate",
+    "average_hype_score",
+    "average_momentum_score",
+    "average_confidence",
+    "average_hype_change",
+    "average_momentum_change",
+    "average_mentions_change",
+)
+
+ENTITY_HISTORY_COLUMNS = (
+    "name",
+    "signal_count",
+    "evaluated_count",
+    "success_count",
+    "neutral_count",
+    "failed_count",
+    "success_rate",
+    "average_hype_score",
+    "average_momentum_score",
+    "average_hype_change",
+    "average_momentum_change",
+    "average_mentions_change",
+    "mention_count",
+    "first_seen",
+    "last_seen",
+    "active_days",
+    "current_rank",
+    "previous_period_rank",
+    "rank_change",
+    "trend",
+    "signal_count_growth",
+    "average_hype_growth",
+    "average_momentum_growth",
+    "mention_growth",
+    "success_rate_change",
+    "consistency_score",
+    "latest_hype_score",
+    "latest_momentum_score",
+)
+
 
 @dataclass(frozen=True)
 class ExportedCSV:
@@ -93,19 +156,22 @@ class CSVExportService:
         database: Database,
         output_dir: Path,
         clock: Callable[[], datetime] = datetime.now,
+        history_thresholds: HistoricalThresholds | None = None,
     ) -> None:
         self.database = database
         self.output_dir = output_dir
         self.clock = clock
+        self.history_thresholds = history_thresholds
 
     def export(
         self,
         kinds: Iterable[str],
         from_date: date | None = None,
         to_date: date | None = None,
+        history_period: str = "30d",
     ) -> CSVExportResult:
         selected = tuple(dict.fromkeys(kinds))
-        unsupported = set(selected) - {"signals", "outcomes", "performance"}
+        unsupported = set(selected) - {"signals", "outcomes", "performance", "history"}
         if unsupported:
             raise ValueError(f"Unsupported CSV export type: {sorted(unsupported)[0]}")
         if from_date and to_date and from_date > to_date:
@@ -123,6 +189,8 @@ class CSVExportService:
             files.append(self._export_outcomes(timestamp, from_value, to_value))
         if "performance" in selected:
             files.extend(self._export_performance(timestamp, from_value, to_value))
+        if "history" in selected:
+            files.extend(self._export_history(timestamp, history_period))
         return CSVExportResult(tuple(files))
 
     def _export_signals(
@@ -257,6 +325,65 @@ class CSVExportService:
             for row in rows:
                 writer.writerow({column: _cell(row.get(column)) for column in columns})
         return path
+
+    def _export_history(
+        self,
+        timestamp: str,
+        period: str,
+    ) -> tuple[ExportedCSV, ...]:
+        report = HistoricalAnalyticsService(
+            self.database,
+            self.history_thresholds,
+            clock=lambda tz=None: self.clock().replace(tzinfo=tz),
+        ).build_report(period)
+        summary_row = {
+            "period": report.period.key,
+            "generated_at": report.generated_at,
+            **report.summary.__dict__,
+        }
+        summary_path = self._write(
+            "history_summary",
+            timestamp,
+            HISTORY_SUMMARY_COLUMNS,
+            [summary_row],
+        )
+        timeline_rows = [bucket.__dict__ for bucket in report.timeline]
+        timeline_path = self._write(
+            "history_timeline",
+            timestamp,
+            HISTORY_TIMELINE_COLUMNS,
+            timeline_rows,
+        )
+
+        def entity_rows(items) -> list[dict[str, object]]:
+            return [
+                {
+                    **item.__dict__,
+                    **item.growth.__dict__,
+                }
+                for item in items
+            ]
+
+        narrative_rows = entity_rows(report.narratives)
+        token_rows = entity_rows(report.tokens)
+        narrative_path = self._write(
+            "narrative_history",
+            timestamp,
+            ENTITY_HISTORY_COLUMNS,
+            narrative_rows,
+        )
+        token_path = self._write(
+            "token_history",
+            timestamp,
+            ENTITY_HISTORY_COLUMNS,
+            token_rows,
+        )
+        return (
+            ExportedCSV("history_summary", summary_path, 1),
+            ExportedCSV("history_timeline", timeline_path, len(timeline_rows)),
+            ExportedCSV("narrative_history", narrative_path, len(narrative_rows)),
+            ExportedCSV("token_history", token_path, len(token_rows)),
+        )
 
     def _unique_path(self, stem: str, timestamp: str) -> Path:
         path = self.output_dir / f"{stem}_{timestamp}.csv"
