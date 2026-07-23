@@ -16,6 +16,7 @@ The project supports real APIs, public RSS feeds, and a fully local mock-AI work
 - Track narrative history, growth, recency, and importance in SQLite
 - Send HTML-formatted Telegram spike alerts, summaries, trends, and digests
 - Explore signals and performance in the built-in FastAPI analytics dashboard
+- Route new signals through configurable smart alert rules
 - Run a complete local MVP without X or OpenAI credentials
 
 ## Screenshots
@@ -56,6 +57,8 @@ flowchart LR
     Bus --> Storage["Database Subscriber"]
     Bus --> Performance["Performance Subscriber"]
     Bus --> Telegram["Telegram Subscriber"]
+    Bus --> Rules["Smart Alert Rule Engine"]
+    Rules --> RuleActions["Telegram / Flags / Digest / CSV"]
     Performance -->|PerformanceUpdated| Bus
     Bus -. Optional live events .-> Dashboard
 
@@ -81,7 +84,7 @@ The application uses a synchronous, typed, in-process event bus with no external
 | --- | --- | --- |
 | `RSSFetched` | An RSS cycle returns shared posts | Extension point for source telemetry |
 | `NarrativeDetected` | Analysis detects a narrative in a post | Extension point for dashboards and APIs |
-| `SignalCreated` | Hype evaluation creates an alert | SQLite alert storage, performance tracking, Telegram |
+| `SignalCreated` | Hype evaluation creates an alert | SQLite alert storage, performance tracking, smart rules, Telegram |
 | `SignalEvaluationRequested` | A configured evaluation window becomes eligible for processing | Outcome evaluator observability and future workers |
 | `SignalEvaluated` | The outcomes engine evaluates a mature signal | SQLite outcome storage, performance updates |
 | `PerformanceUpdated` | Signal or outcome performance changes | Extension point for dashboards and REST APIs |
@@ -144,6 +147,8 @@ app/
   events/models.py
   events/subscribers.py
   export/csv_exporter.py
+  rules/engine.py
+  rules/models.py
   scoring/hype_score.py
   scoring/momentum_score.py
   scoring/signal_outcomes.py
@@ -232,7 +237,7 @@ Open [http://127.0.0.1:8000](http://127.0.0.1:8000). Use another host or port wh
 python -m app.main --dashboard --dashboard-host 0.0.0.0 --dashboard-port 8080
 ```
 
-The dashboard is read-only and provides these pages:
+The dashboard reads analytics from SQLite and provides these pages:
 
 - `/` overview
 - `/signals` latest signals and outcomes
@@ -241,12 +246,77 @@ The dashboard is read-only and provides these pages:
 - `/history` period comparisons, classifications, timelines, and entity details
 - `/narratives` 24-hour narrative rankings
 - `/tokens` 24-hour token rankings
+- `/rules` smart alert rule management and rule details
 
-JSON endpoints are available for signals, performance, outcomes, historical analytics, narratives, tokens, and system status. Pages poll these endpoints every 30 seconds, so collector and dashboard processes can share the same SQLite file without restarting the web server. The Outcomes page filters by status, evaluation window, token, and narrative. The History page selects `7d`, `30d`, `90d`, or `all` and links to narrative and token detail views.
+JSON endpoints are available for signals, performance, outcomes, historical analytics, narratives, tokens, rules, and system status. Pages poll analytics endpoints every 30 seconds, so collector and dashboard processes can share the same SQLite file without restarting the web server. The Outcomes page filters by status, evaluation window, token, and narrative. The History page selects `7d`, `30d`, `90d`, or `all` and links to narrative and token detail views.
 
 The app factory accepts an optional `EventBus`, allowing an embedded dashboard to subscribe to `PerformanceUpdated` and `NarrativeDetected`. The standard CLI deployment remains database-driven so it also works as a separate process.
 
-The dashboard has no authentication. Keep the default localhost binding unless access is protected by a trusted reverse proxy or private network.
+The dashboard and rule-management API have no authentication. Keep the default localhost binding unless access is protected by a trusted reverse proxy or private network.
+
+## Smart Alert Rules
+
+Every `SignalCreated` event is evaluated against enabled rules after the signal is saved. Rules run synchronously in descending priority order. A match is persisted once per rule and signal, updates `last_triggered` and `trigger_count`, and executes its configured actions. Existing signal publishers are unchanged.
+
+Conditions are JSON expression trees. `AND` and `OR` accept non-empty arrays; `NOT` accepts one expression. Comparison leaves use `field`, `operator`, and `value`:
+
+```json
+{
+  "AND": [
+    {"field": "narrative", "operator": "contains", "value": "AI"},
+    {"field": "hype_score", "operator": ">=", "value": 80},
+    {"NOT": {"field": "token", "operator": "eq", "value": "BTC"}}
+  ]
+}
+```
+
+Supported fields are `token`, `narrative`, `hype_score`, `momentum_score`, `confidence`, `mentions`, and `outcome_success_rate`. Text supports `eq`, `ne`, `contains`, and `in`; numeric fields support `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, and the symbol aliases `==`, `!=`, `>`, `>=`, `<`, `<=`. Text comparisons are case-insensitive. Outcome success rate is the percentage of saved successful outcomes for matching token or narrative signals; it is `0` while no evaluated outcomes exist.
+
+Actions:
+
+- `telegram` sends an additional HTML-formatted smart-rule notification when Telegram is configured.
+- `high_priority` marks the signal as high priority.
+- `dashboard_highlight` highlights the signal in dashboard tables.
+- `include_in_digest` adds the signal name to the daily digest smart-rule watchlist.
+- `csv_export_marker` writes `1` in the signal CSV marker column.
+
+Create and manage rules from `/rules`, the REST API, or the CLI:
+
+```powershell
+python -m app.main --create-rule "Extreme AI" `
+  --rule-condition '{"AND":[{"field":"narrative","operator":"contains","value":"AI"},{"field":"hype_score","operator":">=","value":80}]}' `
+  --rule-actions telegram,high_priority,dashboard_highlight `
+  --rule-priority 100
+
+python -m app.main --list-rules
+python -m app.main --disable-rule 1
+python -m app.main --enable-rule 1
+python -m app.main --test-rule 1 --signal-json '{"narrative":"AI agents","hype_score":84,"confidence":8}'
+python -m app.main --delete-rule 1
+```
+
+`--test-rule` is a dry run: it does not execute actions or change trigger counters. Without `--signal-json`, it evaluates the latest saved signal.
+
+REST endpoints:
+
+```text
+GET    /api/rules
+POST   /api/rules
+PUT    /api/rules/{id}
+DELETE /api/rules/{id}
+```
+
+Example POST body:
+
+```json
+{
+  "name": "Extreme AI",
+  "enabled": true,
+  "priority": 100,
+  "condition": {"field": "momentum_score", "operator": ">=", "value": 80},
+  "action": ["telegram", "dashboard_highlight"]
+}
+```
 
 ## Source Modes
 
@@ -594,6 +664,7 @@ Tests cover:
 - Telegram formatting, HTML escaping, and payloads
 - Signal Outcomes evaluation, migration, API, and dashboard behavior
 - CSV headers, encoding, escaping, date filters, aggregate exports, and CLI behavior
+- Smart-rule validation, nested logic, persistence, event handling, actions, CLI, and REST CRUD
 
 ## Contributing
 
@@ -624,8 +695,9 @@ pytest
 - Generated alerts are stored in `signal_history` for performance reporting.
 - Mature signals are evaluated automatically and stored in `signal_outcomes`.
 - Existing databases are migrated in place with signal mention baselines and the expanded multi-window outcome schema.
+- Smart alert rules live in `alert_rules`; per-signal matches and action markers live in `signal_rule_matches`.
 - Historical query indexes for signal timestamps, narrative/token plus timestamp, and outcome evaluation timestamps are added with `CREATE INDEX IF NOT EXISTS`.
-- `--reset-db` clears analyses, alerts, narrative history, momentum snapshots, signal history, and signal outcomes.
+- `--reset-db` clears analyses, alerts, narrative history, momentum snapshots, signal history, outcomes, and rule matches. Rule definitions are preserved and their trigger counters are reset.
 - Individual post-analysis, feed, OpenAI, and Telegram errors are logged without silently failing.
 
 ## Roadmap
@@ -633,6 +705,7 @@ pytest
 - [x] Add a web dashboard for narratives, tokens, and source activity
 - [x] Add configurable multi-window signal outcome evaluation
 - [x] Add period-aware historical analytics and detail views
+- [x] Add configurable smart alert rules
 - [ ] Add source-level reliability and influence weighting
 - [ ] Add semantic clustering for emerging narratives
 - [ ] Add richer interactive charts and momentum sparklines

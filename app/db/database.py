@@ -96,6 +96,34 @@ class Database:
                 UNIQUE (signal_id, evaluation_window_hours)
             );
 
+            CREATE TABLE IF NOT EXISTS alert_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+                priority INTEGER NOT NULL DEFAULT 0,
+                condition TEXT NOT NULL,
+                action TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_triggered TEXT,
+                trigger_count INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS signal_rule_matches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id INTEGER NOT NULL,
+                rule_id INTEGER NOT NULL,
+                triggered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                actions_json TEXT NOT NULL,
+                high_priority INTEGER NOT NULL DEFAULT 0,
+                dashboard_highlight INTEGER NOT NULL DEFAULT 0,
+                include_in_digest INTEGER NOT NULL DEFAULT 0,
+                csv_export_marker INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (signal_id) REFERENCES signal_history(id),
+                FOREIGN KEY (rule_id) REFERENCES alert_rules(id),
+                UNIQUE (signal_id, rule_id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_signal_outcomes_signal_id
             ON signal_outcomes(signal_id);
 
@@ -110,6 +138,15 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_signal_outcomes_evaluated_at
             ON signal_outcomes(evaluated_at);
+
+            CREATE INDEX IF NOT EXISTS idx_alert_rules_enabled_priority
+            ON alert_rules(enabled, priority DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_signal_rule_matches_signal
+            ON signal_rule_matches(signal_id);
+
+            CREATE INDEX IF NOT EXISTS idx_signal_rule_matches_rule
+            ON signal_rule_matches(rule_id);
             """
         )
         self._add_column_if_missing("signal_history", "mentions_count", "INTEGER")
@@ -182,12 +219,16 @@ class Database:
         )
 
     def reset(self) -> None:
+        self.connection.execute("DELETE FROM signal_rule_matches")
         self.connection.execute("DELETE FROM signal_outcomes")
         self.connection.execute("DELETE FROM alerts")
         self.connection.execute("DELETE FROM analyzed_posts")
         self.connection.execute("DELETE FROM narrative_score_history")
         self.connection.execute("DELETE FROM daily_momentum")
         self.connection.execute("DELETE FROM signal_history")
+        self.connection.execute(
+            "UPDATE alert_rules SET last_triggered = NULL, trigger_count = 0"
+        )
         self.connection.commit()
 
     def has_post(self, post_id: str) -> bool:
@@ -525,6 +566,228 @@ class Database:
         )
         self.connection.commit()
         return int(self.connection.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+    def create_alert_rule(
+        self,
+        name: str,
+        enabled: bool,
+        priority: int,
+        condition: dict,
+        actions: tuple[str, ...],
+    ) -> int:
+        cursor = self.connection.execute(
+            """
+            INSERT INTO alert_rules (name, enabled, priority, condition, action)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                int(enabled),
+                int(priority),
+                json.dumps(condition, separators=(",", ":"), sort_keys=True),
+                json.dumps(actions, separators=(",", ":")),
+            ),
+        )
+        self.connection.commit()
+        return int(cursor.lastrowid)
+
+    def get_alert_rules(self, enabled: bool | None = None) -> list[sqlite3.Row]:
+        condition = "WHERE enabled = ?" if enabled is not None else ""
+        parameters = (int(enabled),) if enabled is not None else ()
+        return self.connection.execute(
+            f"""
+            SELECT *
+            FROM alert_rules
+            {condition}
+            ORDER BY priority DESC, name COLLATE NOCASE, id
+            """,
+            parameters,
+        ).fetchall()
+
+    def get_alert_rule(self, rule_id: int) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM alert_rules WHERE id = ?",
+            (rule_id,),
+        ).fetchone()
+
+    def update_alert_rule(self, rule_id: int, **changes) -> bool:
+        columns = {
+            "name": "name",
+            "enabled": "enabled",
+            "priority": "priority",
+            "condition": "condition",
+            "action": "action",
+        }
+        assignments = []
+        parameters: list[object] = []
+        for key, value in changes.items():
+            if key not in columns:
+                raise ValueError(f"Unsupported alert rule column: {key}")
+            if key == "enabled":
+                value = int(bool(value))
+            elif key == "priority":
+                value = int(value)
+            elif key == "condition":
+                value = json.dumps(value, separators=(",", ":"), sort_keys=True)
+            elif key == "action":
+                value = json.dumps(value, separators=(",", ":"))
+            assignments.append(f"{columns[key]} = ?")
+            parameters.append(value)
+        if not assignments:
+            return self.get_alert_rule(rule_id) is not None
+        assignments.append("updated_at = CURRENT_TIMESTAMP")
+        parameters.append(rule_id)
+        cursor = self.connection.execute(
+            f"UPDATE alert_rules SET {', '.join(assignments)} WHERE id = ?",
+            parameters,
+        )
+        self.connection.commit()
+        return bool(cursor.rowcount)
+
+    def delete_alert_rule(self, rule_id: int) -> bool:
+        self.connection.execute(
+            "DELETE FROM signal_rule_matches WHERE rule_id = ?",
+            (rule_id,),
+        )
+        cursor = self.connection.execute(
+            "DELETE FROM alert_rules WHERE id = ?",
+            (rule_id,),
+        )
+        self.connection.commit()
+        return bool(cursor.rowcount)
+
+    def save_rule_match(
+        self,
+        signal_id: int,
+        rule_id: int,
+        actions: tuple[str, ...],
+    ) -> bool:
+        action_set = set(actions)
+        cursor = self.connection.execute(
+            """
+            INSERT OR IGNORE INTO signal_rule_matches (
+                signal_id, rule_id, actions_json, high_priority,
+                dashboard_highlight, include_in_digest, csv_export_marker
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                signal_id,
+                rule_id,
+                json.dumps(actions, separators=(",", ":")),
+                int("high_priority" in action_set),
+                int("dashboard_highlight" in action_set),
+                int("include_in_digest" in action_set),
+                int("csv_export_marker" in action_set),
+            ),
+        )
+        if cursor.rowcount:
+            self.connection.execute(
+                """
+                UPDATE alert_rules
+                SET last_triggered = CURRENT_TIMESTAMP,
+                    trigger_count = trigger_count + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (rule_id,),
+            )
+        self.connection.commit()
+        return bool(cursor.rowcount)
+
+    def get_rule_matches(self, signal_id: int | None = None) -> list[sqlite3.Row]:
+        condition = "WHERE match.signal_id = ?" if signal_id is not None else ""
+        parameters = (signal_id,) if signal_id is not None else ()
+        return self.connection.execute(
+            f"""
+            SELECT match.*, rule.name AS rule_name, rule.priority
+            FROM signal_rule_matches AS match
+            JOIN alert_rules AS rule ON rule.id = match.rule_id
+            {condition}
+            ORDER BY match.triggered_at DESC, rule.priority DESC, match.id DESC
+            """,
+            parameters,
+        ).fetchall()
+
+    def find_signal_history_id(self, values: dict) -> int | None:
+        row = self.connection.execute(
+            """
+            SELECT id
+            FROM signal_history
+            WHERE signal_type = ?
+              AND token IS ?
+              AND narrative IS ?
+              AND hype_score = ?
+              AND momentum_score = ?
+              AND confidence = ?
+              AND action = ?
+              AND COALESCE(mentions_count, 0) = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (
+                values["signal_type"],
+                values["token"],
+                values["narrative"],
+                values["hype_score"],
+                values["momentum_score"],
+                values["confidence"],
+                values["action"],
+                values["mentions_count"],
+            ),
+        ).fetchone()
+        return int(row["id"]) if row is not None else None
+
+    def get_entity_outcome_success_rate(
+        self,
+        token: str | None,
+        narrative: str | None,
+    ) -> float:
+        row = self.connection.execute(
+            """
+            SELECT
+                COUNT(outcome.id) AS evaluated_count,
+                SUM(CASE WHEN outcome.status = 'SUCCESS' THEN 1 ELSE 0 END)
+                    AS successful_count
+            FROM signal_history AS signal
+            JOIN signal_outcomes AS outcome ON outcome.signal_id = signal.id
+            WHERE
+                (? IS NOT NULL AND signal.token = ? COLLATE NOCASE)
+                OR
+                (? IS NOT NULL AND signal.narrative = ? COLLATE NOCASE)
+            """,
+            (token, token, narrative, narrative),
+        ).fetchone()
+        evaluated = int(row["evaluated_count"] or 0)
+        successful = int(row["successful_count"] or 0)
+        return successful / evaluated * 100.0 if evaluated else 0.0
+
+    def get_rule_flagged_signals(
+        self,
+        action: str,
+        lookback_hours: int = 24,
+        limit: int = 10,
+    ) -> list[sqlite3.Row]:
+        columns = {
+            "high_priority",
+            "dashboard_highlight",
+            "include_in_digest",
+            "csv_export_marker",
+        }
+        if action not in columns:
+            raise ValueError(f"Unsupported rule action marker: {action}")
+        return self.connection.execute(
+            f"""
+            SELECT DISTINCT signal.*
+            FROM signal_history AS signal
+            JOIN signal_rule_matches AS match ON match.signal_id = signal.id
+            WHERE match.{action} = 1
+              AND signal.timestamp >= datetime('now', ?)
+            ORDER BY signal.timestamp DESC, signal.id DESC
+            LIMIT ?
+            """,
+            (f"-{lookback_hours} hours", limit),
+        ).fetchall()
 
     def get_pending_signal_outcomes(
         self,
@@ -954,6 +1217,30 @@ class Database:
     ) -> list[sqlite3.Row]:
         if not self.has_table("signal_history"):
             return []
+        rule_columns = (
+            "EXISTS (SELECT 1 FROM signal_rule_matches AS match "
+            "WHERE match.signal_id = signal.id AND match.high_priority = 1) "
+            "AS high_priority, "
+            "EXISTS (SELECT 1 FROM signal_rule_matches AS match "
+            "WHERE match.signal_id = signal.id AND match.dashboard_highlight = 1) "
+            "AS dashboard_highlight, "
+            "EXISTS (SELECT 1 FROM signal_rule_matches AS match "
+            "WHERE match.signal_id = signal.id AND match.include_in_digest = 1) "
+            "AS include_in_digest, "
+            "EXISTS (SELECT 1 FROM signal_rule_matches AS match "
+            "WHERE match.signal_id = signal.id AND match.csv_export_marker = 1) "
+            "AS csv_export_marker, "
+            "(SELECT GROUP_CONCAT(rule.name, ', ') "
+            "FROM signal_rule_matches AS match "
+            "JOIN alert_rules AS rule ON rule.id = match.rule_id "
+            "WHERE match.signal_id = signal.id) AS matched_rules"
+            if self.has_table("signal_rule_matches") and self.has_table("alert_rules")
+            else (
+                "0 AS high_priority, 0 AS dashboard_highlight, "
+                "0 AS include_in_digest, 0 AS csv_export_marker, "
+                "NULL AS matched_rules"
+            )
+        )
         outcome_columns = (
             "outcome.status AS outcome_status, outcome.score_change, "
             "outcome.mentions_change, outcome.momentum_change, outcome.evaluated_at"
@@ -996,7 +1283,8 @@ class Database:
             f"""
             SELECT
                 signal.*,
-                {outcome_columns}
+                {outcome_columns},
+                {rule_columns}
             FROM signal_history AS signal
             {outcome_join}
             {where_clause}

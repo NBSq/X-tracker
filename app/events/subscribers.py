@@ -6,6 +6,7 @@ from app.alerts.telegram import TelegramAlerter
 from app.db.database import Database
 from app.events.bus import EventBus
 from app.events.models import PerformanceUpdated, SignalCreated, SignalEvaluated
+from app.rules.engine import RuleEngine
 
 
 logger = logging.getLogger("x_narrative_tracker")
@@ -84,6 +85,7 @@ def register_default_subscribers(
     telegram: TelegramAlerter | None,
 ) -> None:
     event_bus.subscribe(SignalCreated, SignalPerformanceTracker(db, event_bus))
+    event_bus.subscribe(SignalCreated, RuleEngine(db, telegram))
     if telegram is not None:
         event_bus.subscribe(SignalCreated, TelegramSignalNotifier(telegram))
     event_bus.subscribe(SignalCreated, SignalDatabaseStorage(db))

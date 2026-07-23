@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}{{ rule.name }}{% endblock %}
+{% block heading %}{{ rule.name }}{% endblock %}
+{% block content %}
+<div class="detail-toolbar mb-4">
+  <span class="rule-state rule-state-{{ 'enabled' if rule.enabled else 'disabled' }}">{{ 'Enabled' if rule.enabled else 'Disabled' }}</span>
+  <span class="section-meta">{{ rule.trigger_count }} triggers</span>
+  <a href="/rules">Back to rules</a>
+</div>
+
+<div class="rule-layout">
+  <section class="dashboard-section rule-editor">
+    <div class="section-heading"><h2>Rule definition</h2></div>
+    <form id="rule-edit-form" data-rule-id="{{ rule.id }}">
+      <label class="form-label">Name<input class="form-control" name="name" maxlength="120" required value="{{ rule.name }}"></label>
+      <div class="rule-form-row">
+        <label class="form-label">Priority<input class="form-control" name="priority" type="number" value="{{ rule.priority }}"></label>
+        <label class="form-label rule-switch"><input class="form-check-input" name="enabled" type="checkbox" {% if rule.enabled %}checked{% endif %}> Enabled</label>
+      </div>
+      <label class="form-label">Condition JSON<textarea class="form-control font-monospace" name="condition" rows="11" required>{{ rule.condition|tojson(indent=2) }}</textarea></label>
+      <fieldset class="rule-actions">
+        <legend>Actions</legend>
+        {% for value, label in [('telegram', 'Telegram notification'), ('high_priority', 'High priority'), ('dashboard_highlight', 'Dashboard highlight'), ('include_in_digest', 'Include in digest'), ('csv_export_marker', 'CSV export marker')] %}
+        <label><input class="form-check-input" type="checkbox" name="actions" value="{{ value }}" {% if value in rule.action %}checked{% endif %}> {{ label }}</label>
+        {% endfor %}
+      </fieldset>
+      <p class="form-error" id="rule-form-error" role="alert"></p>
+      <div class="d-flex gap-2"><button class="btn btn-dark" type="submit">Save changes</button><button class="btn btn-outline-danger" id="delete-rule" type="button">Delete rule</button></div>
+    </form>
+  </section>
+
+  <section class="dashboard-section">
+    <div class="section-heading"><h2>Trigger history</h2><span class="section-meta">Latest 25</span></div>
+    <dl class="detail-list mb-4">
+      <div><dt>Created</dt><dd>{{ rule.created_at }}</dd></div>
+      <div><dt>Updated</dt><dd>{{ rule.updated_at }}</dd></div>
+      <div><dt>Last triggered</dt><dd>{{ rule.last_triggered or 'Never' }}</dd></div>
+    </dl>
+    <div class="performance-list">
+      {% for match in rule.matches %}<div><strong>Signal #{{ match.signal_id }}</strong><span>{{ match.triggered_at }}</span></div>
+      {% else %}<p class="empty-state">This rule has not matched a signal.</p>{% endfor %}
+    </div>
+  </section>
+</div>
+{% endblock %}

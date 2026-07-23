@@ -56,6 +56,7 @@ from app.scoring.hype_score import (
 from app.scoring.momentum_score import NarrativeMomentum, calculate_momentum_score
 from app.scoring.opportunity_score import build_opportunity
 from app.scoring.signal_outcomes import OutcomeEvaluator, OutcomeThresholds
+from app.rules import RuleService, RuleValidationError, SignalFacts
 from app.sources.local_client import load_sample_posts
 from app.sources.rss_client import RSSClient, load_rss_feeds
 from app.sources.x_client import XClient, XPost
@@ -240,7 +241,183 @@ def parse_args() -> argparse.Namespace:
         default=8000,
         help="Dashboard port",
     )
+    parser.add_argument(
+        "--list-rules",
+        action="store_true",
+        help="List configured smart alert rules",
+    )
+    parser.add_argument(
+        "--create-rule",
+        metavar="NAME",
+        help="Create a smart alert rule",
+    )
+    parser.add_argument(
+        "--delete-rule",
+        type=positive_int,
+        metavar="ID",
+        help="Delete a smart alert rule",
+    )
+    parser.add_argument(
+        "--enable-rule",
+        type=positive_int,
+        metavar="ID",
+        help="Enable a smart alert rule",
+    )
+    parser.add_argument(
+        "--disable-rule",
+        type=positive_int,
+        metavar="ID",
+        help="Disable a smart alert rule",
+    )
+    parser.add_argument(
+        "--test-rule",
+        type=positive_int,
+        metavar="ID",
+        help="Test a rule without running its actions",
+    )
+    parser.add_argument(
+        "--rule-condition",
+        help="Rule condition as a JSON expression",
+    )
+    parser.add_argument(
+        "--rule-actions",
+        help="Comma-separated actions or a JSON action list",
+    )
+    parser.add_argument(
+        "--rule-priority",
+        type=int,
+        default=0,
+        help="Rule priority used for evaluation order",
+    )
+    parser.add_argument(
+        "--rule-disabled",
+        action="store_true",
+        help="Create a rule in the disabled state",
+    )
+    parser.add_argument(
+        "--signal-json",
+        help="Signal facts JSON for --test-rule; defaults to the latest signal",
+    )
     return parser.parse_args()
+
+
+def requested_rule_command(args: argparse.Namespace) -> bool:
+    return bool(
+        args.list_rules
+        or args.create_rule
+        or args.delete_rule
+        or args.enable_rule
+        or args.disable_rule
+        or args.test_rule
+    )
+
+
+def run_rule_command(args: argparse.Namespace, db: Database) -> None:
+    service = RuleService(db)
+    if args.list_rules:
+        rules = service.list_rules()
+        lines = ["Smart Alert Rules", ""]
+        lines.extend(
+            f"{rule.id}. {rule.name} | "
+            f"{'enabled' if rule.enabled else 'disabled'} | "
+            f"priority {rule.priority} | triggers {rule.trigger_count}"
+            for rule in rules
+        )
+        if not rules:
+            lines.append("No rules configured.")
+        logger.info("\n%s", "\n".join(lines))
+        return
+    if args.create_rule:
+        if not args.rule_condition or not args.rule_actions:
+            raise RuleValidationError(
+                "--create-rule requires --rule-condition and --rule-actions"
+            )
+        rule = service.create_rule(
+            args.create_rule,
+            _json_object(args.rule_condition, "--rule-condition"),
+            _rule_actions_argument(args.rule_actions),
+            enabled=not args.rule_disabled,
+            priority=args.rule_priority,
+        )
+        logger.info("Rule created: %d | %s", rule.id, rule.name)
+        return
+    if args.delete_rule:
+        if not service.delete_rule(args.delete_rule):
+            raise RuleValidationError(f"Rule {args.delete_rule} does not exist")
+        logger.info("Rule deleted: %d", args.delete_rule)
+        return
+    if args.enable_rule or args.disable_rule:
+        rule_id = args.enable_rule or args.disable_rule
+        try:
+            rule = service.set_enabled(rule_id, bool(args.enable_rule))
+        except KeyError as exc:
+            raise RuleValidationError(f"Rule {rule_id} does not exist") from exc
+        logger.info(
+            "Rule %s: %d | %s",
+            "enabled" if rule.enabled else "disabled",
+            rule.id,
+            rule.name,
+        )
+        return
+    if args.test_rule:
+        facts = (
+            SignalFacts.from_mapping(_json_object(args.signal_json, "--signal-json"))
+            if args.signal_json
+            else _latest_signal_facts(db)
+        )
+        try:
+            result = service.test_rule(args.test_rule, facts)
+        except KeyError as exc:
+            raise RuleValidationError(f"Rule {args.test_rule} does not exist") from exc
+        logger.info(
+            "Rule test: %s | %s",
+            result.rule.name,
+            "MATCH" if result.matched else "NO MATCH",
+        )
+
+
+def _json_object(value: str, label: str) -> dict:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise RuleValidationError(f"{label} contains invalid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise RuleValidationError(f"{label} must be a JSON object")
+    return parsed
+
+
+def _rule_actions_argument(value: str) -> list[str]:
+    text = value.strip()
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise RuleValidationError("--rule-actions contains invalid JSON") from exc
+        if not isinstance(parsed, list):
+            raise RuleValidationError("--rule-actions JSON must be a list")
+        return [str(item) for item in parsed]
+    return [item.strip() for item in text.split(",") if item.strip()]
+
+
+def _latest_signal_facts(db: Database) -> SignalFacts:
+    rows = db.get_signals(limit=1)
+    if not rows:
+        raise RuleValidationError(
+            "No saved signal is available; provide --signal-json"
+        )
+    row = rows[0]
+    return SignalFacts(
+        token=row["token"],
+        narrative=row["narrative"],
+        hype_score=float(row["hype_score"]),
+        momentum_score=float(row["momentum_score"]),
+        confidence=int(row["confidence"]),
+        mentions=int(row["mentions_count"] or 0),
+        outcome_success_rate=db.get_entity_outcome_success_rate(
+            row["token"],
+            row["narrative"],
+        ),
+    )
 
 
 def requested_csv_exports(args: argparse.Namespace) -> tuple[str, ...]:
@@ -667,6 +844,15 @@ def build_daily_digest(db: Database) -> DailyDigest:
         f"{top_token} led token attention while {top_narrative} led narratives. "
         f"{growth_text}"
     )
+    digest_signals = db.get_rule_flagged_signals("include_in_digest", limit=5)
+    if digest_signals:
+        digest_names = list(
+            dict.fromkeys(
+                str(row["token"] or row["narrative"] or "Unknown")
+                for row in digest_signals
+            )
+        )
+        final_summary += " Smart-rule watchlist: " + ", ".join(digest_names) + "."
     return DailyDigest(
         top_tokens=token_items[:5],
         top_narratives=narrative_items[:5],
@@ -1107,6 +1293,9 @@ def main() -> None:
         raise SystemExit(1)
 
     try:
+        if requested_rule_command(args):
+            run_rule_command(args, db)
+            return
         export_kinds = requested_csv_exports(args)
         if export_kinds:
             run_csv_exports(

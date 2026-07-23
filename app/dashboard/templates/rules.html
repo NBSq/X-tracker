@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Rules{% endblock %}
+{% block heading %}Smart Alert Rules{% endblock %}
+{% block content %}
+<div class="rule-layout">
+  <section class="dashboard-section">
+    <div class="section-heading"><h2>Configured rules</h2><span class="section-meta">Priority order</span></div>
+    <div class="table-responsive">
+      <table class="table align-middle rule-table mb-0">
+        <thead><tr><th>Rule</th><th>Status</th><th>Priority</th><th>Triggers</th><th>Last triggered</th><th></th></tr></thead>
+        <tbody>
+          {% for rule in rules %}
+          <tr>
+            <td><strong><a href="/rules/{{ rule.id }}">{{ rule.name }}</a></strong><small>{{ rule.action|join(', ') }}</small></td>
+            <td><span class="rule-state rule-state-{{ 'enabled' if rule.enabled else 'disabled' }}">{{ 'Enabled' if rule.enabled else 'Disabled' }}</span></td>
+            <td>{{ rule.priority }}</td>
+            <td>{{ rule.trigger_count }}</td>
+            <td>{{ rule.last_triggered or 'Never' }}</td>
+            <td><button class="btn btn-sm btn-outline-secondary" type="button" data-rule-toggle="{{ rule.id }}" data-enabled="{{ 'true' if rule.enabled else 'false' }}">{{ 'Disable' if rule.enabled else 'Enable' }}</button></td>
+          </tr>
+          {% else %}<tr><td colspan="6" class="empty-state">No smart alert rules configured.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="dashboard-section rule-editor">
+    <div class="section-heading"><h2>Create rule</h2></div>
+    <form id="rule-create-form">
+      <label class="form-label">Name<input class="form-control" name="name" maxlength="120" required></label>
+      <div class="rule-form-row">
+        <label class="form-label">Priority<input class="form-control" name="priority" type="number" value="0"></label>
+        <label class="form-label rule-switch"><input class="form-check-input" name="enabled" type="checkbox" checked> Enabled</label>
+      </div>
+      <label class="form-label">Condition JSON<textarea class="form-control font-monospace" name="condition" rows="9" required>{
+  "AND": [
+    {"field": "hype_score", "operator": ">=", "value": 80},
+    {"field": "confidence", "operator": ">=", "value": 7}
+  ]
+}</textarea></label>
+      <fieldset class="rule-actions">
+        <legend>Actions</legend>
+        {% for value, label in [('telegram', 'Telegram notification'), ('high_priority', 'High priority'), ('dashboard_highlight', 'Dashboard highlight'), ('include_in_digest', 'Include in digest'), ('csv_export_marker', 'CSV export marker')] %}
+        <label><input class="form-check-input" type="checkbox" name="actions" value="{{ value }}" {% if value == 'dashboard_highlight' %}checked{% endif %}> {{ label }}</label>
+        {% endfor %}
+      </fieldset>
+      <p class="form-error" id="rule-form-error" role="alert"></p>
+      <button class="btn btn-dark" type="submit">Create rule</button>
+    </form>
+  </section>
+</div>
+{% endblock %}

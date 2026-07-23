@@ -25,8 +25,10 @@ function signalRows(signals) {
     const secondary = signal.token && signal.narrative ? `<small>${escapeHtml(signal.narrative)}</small>` : "";
     const action = String(signal.action || "watch").toLowerCase();
     const outcome = String(signal.outcome_status || "pending").toLowerCase();
-    return `<tr>
-      <td><strong>${escapeHtml(primary)}</strong>${secondary}</td>
+    const priority = signal.high_priority ? '<span class="priority-flag">High</span>' : "";
+    const rules = signal.matched_rules ? `<small>Rule: ${escapeHtml(signal.matched_rules)}</small>` : "";
+    return `<tr class="${signal.dashboard_highlight ? "rule-highlight" : ""}">
+      <td><strong>${escapeHtml(primary)}${priority}</strong>${secondary}${rules}</td>
       <td><span class="type-label">${escapeHtml(signal.signal_type)}</span></td>
       <td><b>${Math.round(signal.hype_score)}</b><span class="score-muted">/100</span></td>
       <td>${Math.round(signal.momentum_score)}</td>
@@ -72,6 +74,83 @@ function outcomeRows(items) {
       <td>${change(item.momentum_change)}</td><td>${item.mentions_change >= 0 ? "+" : ""}${item.mentions_change}</td>
       <td>${escapeHtml(item.evaluated_at)}</td></tr>`;
   }).join("");
+}
+
+async function ruleRequest(url, method, body) {
+  const response = await fetch(url, {
+    method,
+    headers: {"Content-Type": "application/json", Accept: "application/json"},
+    body: body == null ? undefined : JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.detail || `Request failed: ${response.status}`);
+  }
+  return response.status === 204 ? null : response.json();
+}
+
+function rulePayload(form) {
+  const actions = [...form.querySelectorAll('input[name="actions"]:checked')].map((item) => item.value);
+  return {
+    name: form.elements.name.value.trim(),
+    enabled: form.elements.enabled.checked,
+    priority: Number(form.elements.priority.value || 0),
+    condition: JSON.parse(form.elements.condition.value),
+    action: actions,
+  };
+}
+
+function showRuleError(message) {
+  const target = document.getElementById("rule-form-error");
+  if (target) target.textContent = message;
+}
+
+function initializeRules() {
+  const createForm = document.getElementById("rule-create-form");
+  if (createForm) createForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const rule = await ruleRequest("/api/rules", "POST", rulePayload(createForm));
+      window.location.assign(`/rules/${rule.id}`);
+    } catch (error) {
+      showRuleError(error instanceof SyntaxError ? "Condition must be valid JSON." : error.message);
+    }
+  });
+
+  const editForm = document.getElementById("rule-edit-form");
+  if (editForm) editForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const ruleId = editForm.dataset.ruleId;
+      await ruleRequest(`/api/rules/${ruleId}`, "PUT", rulePayload(editForm));
+      window.location.reload();
+    } catch (error) {
+      showRuleError(error instanceof SyntaxError ? "Condition must be valid JSON." : error.message);
+    }
+  });
+
+  document.querySelectorAll("[data-rule-toggle]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await ruleRequest(`/api/rules/${button.dataset.ruleToggle}`, "PUT", {enabled: button.dataset.enabled !== "true"});
+        window.location.reload();
+      } catch (error) {
+        showRuleError(error.message);
+      }
+    });
+  });
+
+  const deleteButton = document.getElementById("delete-rule");
+  if (deleteButton) deleteButton.addEventListener("click", async () => {
+    const ruleId = document.getElementById("rule-edit-form").dataset.ruleId;
+    if (!window.confirm("Delete this smart alert rule?")) return;
+    try {
+      await ruleRequest(`/api/rules/${ruleId}`, "DELETE");
+      window.location.assign("/rules");
+    } catch (error) {
+      showRuleError(error.message);
+    }
+  });
 }
 
 async function refreshStatus() {
@@ -199,3 +278,4 @@ async function refreshPage() {
 }
 
 window.setInterval(refreshPage, POLL_INTERVAL);
+initializeRules();

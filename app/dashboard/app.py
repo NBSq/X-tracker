@@ -3,19 +3,38 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
+import sqlite3
 
 from app.config import load_config
 from app.analytics.historical import HistoricalThresholds
 from app.events import EventBus, NarrativeDetected, PerformanceUpdated
 from app.dashboard.service import DashboardService
+from app.rules import RuleValidationError
 
 
 DASHBOARD_DIR = Path(__file__).resolve().parent
 HISTORY_PERIODS = {"7d", "30d", "90d", "all"}
+
+
+class RuleCreatePayload(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    enabled: bool = True
+    priority: int = 0
+    condition: dict
+    action: list[str] | str
+
+
+class RuleUpdatePayload(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    enabled: bool | None = None
+    priority: int | None = None
+    condition: dict | None = None
+    action: list[str] | str | None = None
 
 
 class DashboardEventState:
@@ -72,6 +91,13 @@ def create_app(
                 detail="period must be one of: 7d, 30d, 90d, all",
             )
         return period
+
+    def rule_error(exc: Exception) -> HTTPException:
+        if isinstance(exc, KeyError):
+            return HTTPException(status_code=404, detail="Rule not found")
+        if isinstance(exc, sqlite3.IntegrityError):
+            return HTTPException(status_code=409, detail="Rule name already exists")
+        return HTTPException(status_code=422, detail=str(exc))
 
     @app.get("/", response_class=HTMLResponse)
     def overview_page(request: Request):
@@ -199,6 +225,29 @@ def create_app(
             status=service.status(),
         )
 
+    @app.get("/rules", response_class=HTMLResponse)
+    def rules_page(request: Request):
+        return render(
+            request,
+            "rules.html",
+            "rules",
+            rules=service.rules(),
+            status=service.status(),
+        )
+
+    @app.get("/rules/{rule_id}", response_class=HTMLResponse)
+    def rule_detail_page(request: Request, rule_id: int):
+        rule = service.rule(rule_id)
+        if rule is None:
+            raise HTTPException(status_code=404, detail="Rule not found")
+        return render(
+            request,
+            "rule_detail.html",
+            "rules",
+            rule=rule,
+            status=service.status(),
+        )
+
     @app.get("/api/signals")
     def signals_api(limit: int = Query(default=50, ge=1, le=200)):
         return {"signals": service.signals(limit)}
@@ -286,6 +335,40 @@ def create_app(
         status = service.status()
         status["last_event_at"] = event_state.last_event_at
         return status
+
+    @app.get("/api/rules")
+    def rules_api(enabled: bool | None = None):
+        return {"rules": service.rules(enabled)}
+
+    @app.post("/api/rules", status_code=status.HTTP_201_CREATED)
+    def create_rule_api(payload: RuleCreatePayload):
+        try:
+            return service.create_rule(
+                payload.name,
+                payload.condition,
+                payload.action,
+                payload.enabled,
+                payload.priority,
+            )
+        except (RuleValidationError, sqlite3.IntegrityError) as exc:
+            raise rule_error(exc) from exc
+
+    @app.put("/api/rules/{rule_id}")
+    def update_rule_api(rule_id: int, payload: RuleUpdatePayload):
+        changes = {
+            key: value
+            for key, value in payload.model_dump().items()
+            if value is not None
+        }
+        try:
+            return service.update_rule(rule_id, **changes)
+        except (KeyError, RuleValidationError, sqlite3.IntegrityError) as exc:
+            raise rule_error(exc) from exc
+
+    @app.delete("/api/rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_rule_api(rule_id: int):
+        if not service.delete_rule(rule_id):
+            raise HTTPException(status_code=404, detail="Rule not found")
 
     return app
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from html import escape
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import requests
 
@@ -11,6 +11,9 @@ from app.scoring.hype_score import HypeSignal
 from app.scoring.hype_score import normalize_hype_score
 from app.scoring.momentum_score import NarrativeMomentum
 from app.scoring.opportunity_score import NarrativeOpportunity
+
+if TYPE_CHECKING:
+    from app.rules.models import SignalFacts
 
 
 @dataclass(frozen=True)
@@ -149,6 +152,36 @@ class TelegramAlerter:
             json={
                 "chat_id": self.chat_id,
                 "text": format_telegram_hype_alert(alert),
+                "parse_mode": "HTML",
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+
+    def send_rule_alert(
+        self,
+        rule_name: str,
+        priority: int,
+        facts: SignalFacts,
+    ) -> None:
+        signal_name = " + ".join(
+            value for value in (facts.token, facts.narrative) if value
+        ) or "Unknown"
+        text = (
+            "<b>Smart Alert Rule Matched</b>\n\n"
+            f"<b>Rule:</b> {escape(rule_name)}\n"
+            f"<b>Signal:</b> {escape(signal_name)}\n"
+            f"<b>Priority:</b> {priority}\n\n"
+            f"<b>Hype:</b> {facts.hype_score:.1f}/100\n"
+            f"<b>Momentum:</b> {facts.momentum_score:.1f}\n"
+            f"<b>Confidence:</b> {facts.confidence}/10\n"
+            f"<b>Mentions:</b> {facts.mentions}"
+        )
+        response = requests.post(
+            f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
+            json={
+                "chat_id": self.chat_id,
+                "text": text,
                 "parse_mode": "HTML",
             },
             timeout=30,

@@ -1,7 +1,7 @@
 {% set rows = signals if signals is defined else data.signals %}
 {% for signal in rows %}
-<tr>
-  <td><strong>{{ signal.token or signal.narrative or 'Unknown' }}</strong>{% if signal.token and signal.narrative %}<small>{{ signal.narrative }}</small>{% endif %}</td>
+<tr class="{% if signal.dashboard_highlight %}rule-highlight{% endif %}">
+  <td><strong>{{ signal.token or signal.narrative or 'Unknown' }}{% if signal.high_priority %}<span class="priority-flag">High</span>{% endif %}</strong>{% if signal.token and signal.narrative %}<small>{{ signal.narrative }}</small>{% endif %}{% if signal.matched_rules %}<small>Rule: {{ signal.matched_rules }}</small>{% endif %}</td>
   <td><span class="type-label">{{ signal.signal_type }}</span></td>
   <td><b>{{ signal.hype_score|int }}</b><span class="score-muted">/100</span></td>
   <td>{{ signal.momentum_score|int }}</td>

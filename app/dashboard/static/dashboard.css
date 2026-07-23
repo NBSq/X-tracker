@@ -92,6 +92,23 @@ body { background: var(--canvas); color: var(--ink); font-family: Inter, "Segoe 
 .outcome-rising, .outcome-new { background: var(--teal-soft); color: #076956; }
 .outcome-declining, .outcome-inactive { background: var(--red-soft); color: var(--red); }
 .outcome-stable { background: var(--amber-soft); color: var(--amber); }
+.rule-highlight { box-shadow: inset 3px 0 0 var(--teal); background: #f0faf7; }
+.priority-flag { display: inline-flex; margin-left: 8px; padding: 2px 5px; border-radius: 3px; background: var(--red-soft); color: var(--red); font-size: 9px; text-transform: uppercase; vertical-align: middle; }
+.rule-layout { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(300px, .8fr); gap: 36px; align-items: start; }
+.rule-table a { color: var(--ink); text-decoration: none; }
+.rule-table a:hover { color: var(--teal); }
+.rule-state { display: inline-flex; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; }
+.rule-state-enabled { background: var(--teal-soft); color: #076956; }
+.rule-state-disabled { background: #edf1f0; color: var(--muted); }
+.rule-editor { padding: 20px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.rule-editor .form-label { display: block; width: 100%; color: var(--muted); font-size: 11px; font-weight: 700; margin-bottom: 14px; }
+.rule-editor .form-control { margin-top: 5px; color: var(--ink); font-size: 12px; }
+.rule-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: center; }
+.rule-switch { display: flex !important; align-items: center; gap: 8px; margin-top: 13px; }
+.rule-actions { display: grid; gap: 8px; margin: 0 0 18px; }
+.rule-actions legend { color: var(--muted); font-size: 11px; font-weight: 700; }
+.rule-actions label { color: var(--ink); font-size: 12px; }
+.form-error { min-height: 20px; color: var(--red); font-size: 12px; }
 
 @media (max-width: 767px) {
   .app-shell { width: min(100% - 24px, 1180px); }
@@ -112,4 +129,5 @@ body { background: var(--canvas); color: var(--ink); font-family: Inter, "Segoe 
   .history-metrics .metric-card { border-bottom: 1px solid var(--line); }
   .history-chart-grid { grid-template-columns: 1fr; gap: 28px; }
   .history-ranking-grid { margin-right: 0; margin-left: 0; }
+  .rule-layout { grid-template-columns: 1fr; gap: 28px; }
 }

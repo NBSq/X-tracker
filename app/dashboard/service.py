@@ -7,6 +7,7 @@ from typing import Any
 from app.analytics.historical import HistoricalAnalyticsService, HistoricalThresholds
 from app.db.database import Database
 from app.scoring.hype_score import normalize_hype_score
+from app.rules import RuleService
 
 
 class DashboardService:
@@ -54,6 +55,11 @@ class DashboardService:
                     "mentions_change": row["mentions_change"],
                     "momentum_change": row["momentum_change"],
                     "evaluated_at": row["evaluated_at"],
+                    "high_priority": bool(row["high_priority"]),
+                    "dashboard_highlight": bool(row["dashboard_highlight"]),
+                    "include_in_digest": bool(row["include_in_digest"]),
+                    "csv_export_marker": bool(row["csv_export_marker"]),
+                    "matched_rules": row["matched_rules"],
                 }
                 for row in db.get_latest_signals(max(1, min(limit, 200)))
             ]
@@ -127,6 +133,67 @@ class DashboardService:
             "narratives": self.narratives(6),
             "tokens": self.tokens(6),
         }
+
+    def rules(self, enabled: bool | None = None) -> list[dict[str, Any]]:
+        db = self._database()
+        try:
+            return [rule.as_dict() for rule in RuleService(db).list_rules(enabled)]
+        finally:
+            db.close()
+
+    def rule(self, rule_id: int) -> dict[str, Any] | None:
+        db = self._database()
+        try:
+            rule = RuleService(db).get_rule(rule_id)
+            if rule is None:
+                return None
+            result = rule.as_dict()
+            result["matches"] = [
+                {
+                    "signal_id": int(row["signal_id"]),
+                    "triggered_at": row["triggered_at"],
+                    "actions": row["actions_json"],
+                }
+                for row in db.get_rule_matches()
+                if int(row["rule_id"]) == rule_id
+            ][:25]
+            return result
+        finally:
+            db.close()
+
+    def create_rule(
+        self,
+        name: str,
+        condition: dict[str, Any],
+        actions: str | list[str],
+        enabled: bool = True,
+        priority: int = 0,
+    ) -> dict[str, Any]:
+        db = self._database()
+        try:
+            return RuleService(db).create_rule(
+                name,
+                condition,
+                actions,
+                enabled=enabled,
+                priority=priority,
+            ).as_dict()
+        finally:
+            db.close()
+
+    def update_rule(self, rule_id: int, **changes: Any) -> dict[str, Any]:
+        db = self._database()
+        try:
+            return RuleService(db).update_rule(rule_id, **changes).as_dict()
+        finally:
+            db.close()
+
+    def delete_rule(self, rule_id: int) -> bool:
+        db = self._database()
+        try:
+            return RuleService(db).delete_rule(rule_id)
+        finally:
+            db.close()
 
     def history(self, period: str = "30d") -> dict[str, Any]:
         db = self._database()
@@ -316,7 +383,10 @@ class DashboardService:
         ]
 
     def _database(self) -> Database:
-        return Database(self.database_path)
+        db = Database(self.database_path)
+        if not db.has_table("alert_rules"):
+            db.initialize()
+        return db
 
 
 def _value(row, key: str, default=0):

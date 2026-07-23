@@ -22,6 +22,7 @@ SIGNAL_COLUMNS = (
     "confidence",
     "action",
     "status",
+    "csv_export_marker",
 )
 
 OUTCOME_COLUMNS = (
@@ -212,6 +213,7 @@ class CSVExportService:
                 "confidence": row["confidence"],
                 "action": row["action"],
                 "status": row["outcome_status"],
+                "csv_export_marker": row["csv_export_marker"],
             }
             for row in self.database.get_signals(
                 limit=None,
