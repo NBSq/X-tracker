@@ -135,6 +135,7 @@ class RuleEngine:
             event.token,
             event.narrative,
         )
+        watchlist_context = self.db.get_signal_watchlist_context(signal_id)
         facts = SignalFacts(
             token=event.token,
             narrative=event.narrative,
@@ -143,6 +144,10 @@ class RuleEngine:
             confidence=event.confidence,
             mentions=event.mentions_count,
             outcome_success_rate=success_rate,
+            watchlists=tuple(watchlist_context["names"]),
+            watchlist_ids=tuple(watchlist_context["ids"]),
+            watchlist_priority=int(watchlist_context["highest_priority"]),
+            matched_watchlist=bool(watchlist_context["matched_any"]),
         )
         for rule in enabled_rules:
             if not evaluate_condition(rule.condition, facts):

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit watchlist' if watchlist else 'Create watchlist' }}{% endblock %}
+{% block heading %}{{ 'Edit watchlist' if watchlist else 'Create watchlist' }}{% endblock %}
+{% block content %}
+<div class="watchlist-form-shell">
+  <form id="watchlist-form" class="rule-editor" data-watchlist-id="{{ watchlist.id if watchlist else '' }}">
+    <label class="form-label">Name<input class="form-control" name="name" required maxlength="120" value="{{ watchlist.name if watchlist else '' }}"></label>
+    <label class="form-label">Description<textarea class="form-control" name="description" rows="3" maxlength="500">{{ watchlist.description if watchlist else '' }}</textarea></label>
+    <div class="rule-form-row">
+      <label class="form-label">Priority<input class="form-control" type="number" min="0" max="100" name="priority" value="{{ watchlist.priority if watchlist else 0 }}"></label>
+      <label class="form-label">Minimum confidence<input class="form-control" type="number" min="0" max="10" name="minimum_confidence" value="{{ watchlist.minimum_confidence if watchlist else 0 }}"></label>
+      <label class="form-label">Minimum hype<input class="form-control" type="number" min="0" max="100" step="0.1" name="minimum_hype_score" value="{{ watchlist.minimum_hype_score if watchlist else 0 }}"></label>
+      <label class="form-label">Minimum momentum<input class="form-control" type="number" min="0" max="100" step="0.1" name="minimum_momentum_score" value="{{ watchlist.minimum_momentum_score if watchlist else 0 }}"></label>
+    </div>
+    {% for field, label, default in [('enabled','Enabled',true),('telegram_enabled','Telegram notifications',true),('include_in_digest','Include in digest',false),('dashboard_highlight','Dashboard highlight',true),('case_insensitive','Case-insensitive narratives',true)] %}
+    <label class="form-check form-switch rule-switch"><input class="form-check-input" type="checkbox" name="{{ field }}" {% if (watchlist and watchlist[field]) or (not watchlist and default) %}checked{% endif %}><span>{{ label }}</span></label>
+    {% endfor %}
+    <p id="watchlist-error" class="form-error" role="alert"></p>
+    <div class="d-flex gap-2"><button class="btn btn-dark" type="submit">{{ 'Save changes' if watchlist else 'Create watchlist' }}</button><a class="btn btn-outline-secondary" href="{{ '/watchlists/' ~ watchlist.id if watchlist else '/watchlists' }}">Cancel</a>{% if watchlist %}<button class="btn btn-outline-danger ms-auto" id="delete-watchlist" type="button">Delete</button>{% endif %}</div>
+  </form>
+</div>
+{% endblock %}

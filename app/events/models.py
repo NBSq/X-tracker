@@ -87,6 +87,16 @@ class SignalCreated:
 
 
 @dataclass(frozen=True)
+class WatchlistMatched:
+    signal_id: int
+    watchlist_ids: tuple[int, ...]
+    watchlist_names: tuple[str, ...]
+    matched_tokens: tuple[str, ...]
+    matched_narratives: tuple[str, ...]
+    highest_priority: int
+
+
+@dataclass(frozen=True)
 class SignalEvaluationRequested:
     evaluation_window_hours: int
 

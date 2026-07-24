@@ -8,6 +8,7 @@ from app.analytics.historical import HistoricalAnalyticsService, HistoricalThres
 from app.db.database import Database
 from app.scoring.hype_score import normalize_hype_score
 from app.rules import RuleService
+from app.watchlists import WatchlistService
 
 
 class DashboardService:
@@ -35,7 +36,11 @@ class DashboardService:
         finally:
             db.close()
 
-    def signals(self, limit: int = 50) -> list[dict[str, Any]]:
+    def signals(
+        self,
+        limit: int = 50,
+        watchlist_id: int | None = None,
+    ) -> list[dict[str, Any]]:
         db = self._database()
         try:
             return [
@@ -56,12 +61,18 @@ class DashboardService:
                     "momentum_change": row["momentum_change"],
                     "evaluated_at": row["evaluated_at"],
                     "high_priority": bool(row["high_priority"]),
-                    "dashboard_highlight": bool(row["dashboard_highlight"]),
-                    "include_in_digest": bool(row["include_in_digest"]),
+                    "dashboard_highlight": bool(row["dashboard_highlight"])
+                    or bool(_value(row, "watchlist_dashboard_highlight", False)),
+                    "include_in_digest": bool(row["include_in_digest"])
+                    or bool(_value(row, "watchlist_include_in_digest", False)),
                     "csv_export_marker": bool(row["csv_export_marker"]),
                     "matched_rules": row["matched_rules"],
+                    "watchlist_names": _value(row, "watchlist_names", None),
                 }
-                for row in db.get_latest_signals(max(1, min(limit, 200)))
+                for row in db.get_signals(
+                    limit=max(1, min(limit, 200)),
+                    watchlist_id=watchlist_id,
+                )
             ]
         finally:
             db.close()
@@ -195,13 +206,108 @@ class DashboardService:
         finally:
             db.close()
 
-    def history(self, period: str = "30d") -> dict[str, Any]:
+    def watchlists(self, enabled: bool | None = None) -> list[dict[str, Any]]:
         db = self._database()
         try:
+            service = WatchlistService(db)
+            result = []
+            for watchlist in service.list_watchlists(enabled):
+                report = service.report(watchlist.id)
+                item = watchlist.as_dict()
+                item.update(
+                    {
+                        "item_count": len(report.items),
+                        "token_count": sum(
+                            entry.item_type == "token" for entry in report.items
+                        ),
+                        "narrative_count": sum(
+                            entry.item_type == "narrative" for entry in report.items
+                        ),
+                        "signals_count": report.signals_count,
+                        "evaluated_count": report.evaluated_count,
+                        "success_rate": report.success_rate,
+                        "last_matched_at": report.last_matched_at,
+                    }
+                )
+                result.append(item)
+            return result
+        finally:
+            db.close()
+
+    def watchlist(self, identifier: int | str) -> dict[str, Any] | None:
+        db = self._database()
+        try:
+            service = WatchlistService(db)
+            watchlist = service.get_watchlist(identifier)
+            if watchlist is None:
+                return None
+            return service.report(watchlist.id).as_dict()
+        finally:
+            db.close()
+
+    def create_watchlist(self, **values: Any) -> dict[str, Any]:
+        db = self._database()
+        try:
+            return WatchlistService(db).create_watchlist(**values).as_dict()
+        finally:
+            db.close()
+
+    def update_watchlist(self, watchlist_id: int, **changes: Any) -> dict[str, Any]:
+        db = self._database()
+        try:
+            return WatchlistService(db).update_watchlist(
+                watchlist_id,
+                **changes,
+            ).as_dict()
+        finally:
+            db.close()
+
+    def delete_watchlist(self, watchlist_id: int) -> bool:
+        db = self._database()
+        try:
+            return WatchlistService(db).delete_watchlist(watchlist_id)
+        finally:
+            db.close()
+
+    def add_watchlist_item(
+        self,
+        watchlist_id: int,
+        item_type: str,
+        item_value: str,
+    ) -> dict[str, Any]:
+        db = self._database()
+        try:
+            return WatchlistService(db).add_item(
+                watchlist_id,
+                item_type,
+                item_value,
+            ).as_dict()
+        finally:
+            db.close()
+
+    def remove_watchlist_item(self, watchlist_id: int, item_id: int) -> bool:
+        db = self._database()
+        try:
+            return WatchlistService(db).remove_item(watchlist_id, item_id)
+        finally:
+            db.close()
+
+    def history(
+        self,
+        period: str = "30d",
+        watchlist_id: int | None = None,
+    ) -> dict[str, Any]:
+        db = self._database()
+        try:
+            signal_ids = (
+                WatchlistService(db).matching_signal_ids(watchlist_id)
+                if watchlist_id is not None
+                else None
+            )
             data = HistoricalAnalyticsService(
                 db,
                 self.history_thresholds,
-            ).build_report(period).as_dict()
+            ).build_report(period, signal_ids=signal_ids).as_dict()
             narratives = data["narratives"]
             for trend in ("RISING", "NEW", "DECLINING", "INACTIVE"):
                 data[f"{trend.lower()}_narratives"] = [
@@ -248,6 +354,7 @@ class DashboardService:
         narrative: str | None = None,
         period_hours: int | None = None,
         signal_id: int | None = None,
+        watchlist_id: int | None = None,
     ) -> list[dict[str, Any]]:
         db = self._database()
         try:
@@ -283,16 +390,28 @@ class DashboardService:
                     narrative=narrative,
                     period_hours=period_hours,
                     signal_id=signal_id,
+                    watchlist_id=watchlist_id,
                 )
             ]
         finally:
             db.close()
 
-    def outcome_summary(self, period_hours: int | None = None) -> dict[str, Any]:
+    def outcome_summary(
+        self,
+        period_hours: int | None = None,
+        watchlist_id: int | None = None,
+    ) -> dict[str, Any]:
         db = self._database()
         try:
             if not db.has_table("signal_outcomes"):
                 return self._empty_outcome_summary()
+            if watchlist_id is not None:
+                rows = db.get_signal_outcomes(
+                    limit=None,
+                    period_hours=period_hours,
+                    watchlist_id=watchlist_id,
+                )
+                return self._outcome_summary_from_rows(rows)
             row = db.get_signal_outcome_summary(period_hours=period_hours)
             evaluated = int(row["signals_evaluated"] or 0)
             successful = int(row["success"] or 0)
@@ -310,6 +429,62 @@ class DashboardService:
             }
         finally:
             db.close()
+
+    @staticmethod
+    def _outcome_summary_from_rows(rows) -> dict[str, Any]:
+        total = len(rows)
+        counts = {
+            status: sum(str(row["status"]) == status for row in rows)
+            for status in ("SUCCESS", "NEUTRAL", "FAILED")
+        }
+        by_narrative: dict[str, list] = {}
+        for row in rows:
+            if row["narrative"]:
+                by_narrative.setdefault(str(row["narrative"]), []).append(row)
+        rankings = []
+        for name, values in by_narrative.items():
+            successful = sum(str(row["status"]) == "SUCCESS" for row in values)
+            rankings.append(
+                {
+                    "name": name,
+                    "evaluated_count": len(values),
+                    "outcome_score": round(successful / len(values) * 100, 2),
+                    "success_rate": round(successful / len(values) * 100, 1),
+                    "average_momentum_change": round(
+                        sum(float(row["momentum_change"]) for row in values)
+                        / len(values),
+                        1,
+                    ),
+                }
+            )
+        rankings.sort(
+            key=lambda item: (
+                item["success_rate"],
+                item["average_momentum_change"],
+                item["evaluated_count"],
+            ),
+            reverse=True,
+        )
+
+        def average(field: str) -> float:
+            return round(
+                sum(float(row[field]) for row in rows) / total,
+                1,
+            ) if total else 0.0
+
+        return {
+            "signals_evaluated": total,
+            "successful": counts["SUCCESS"],
+            "neutral": counts["NEUTRAL"],
+            "failed": counts["FAILED"],
+            "success_rate": round(counts["SUCCESS"] / total * 100, 1)
+            if total else 0.0,
+            "average_hype_change": average("hype_change"),
+            "average_momentum_change": average("momentum_change"),
+            "average_mentions_change": average("mentions_change"),
+            "best_narratives": rankings[:5],
+            "worst_narratives": list(reversed(rankings[-5:])),
+        }
 
     @staticmethod
     def _empty_outcome_summary() -> dict[str, Any]:
@@ -384,7 +559,7 @@ class DashboardService:
 
     def _database(self) -> Database:
         db = Database(self.database_path)
-        if not db.has_table("alert_rules"):
+        if not db.has_table("alert_rules") or not db.has_table("watchlists"):
             db.initialize()
         return db
 

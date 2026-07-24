@@ -14,6 +14,10 @@ RULE_FIELDS = frozenset(
         "confidence",
         "mentions",
         "outcome_success_rate",
+        "watchlist",
+        "watchlist_id",
+        "watchlist_priority",
+        "matched_watchlist",
     }
 )
 ALERT_ACTIONS = frozenset(
@@ -45,7 +49,8 @@ _ACTION_ALIASES = {
     "digest": "include_in_digest",
     "csv": "csv_export_marker",
 }
-_TEXT_FIELDS = frozenset({"token", "narrative"})
+_TEXT_FIELDS = frozenset({"token", "narrative", "watchlist"})
+_BOOLEAN_FIELDS = frozenset({"matched_watchlist"})
 
 
 class RuleValidationError(ValueError):
@@ -61,6 +66,10 @@ class SignalFacts:
     confidence: int
     mentions: int
     outcome_success_rate: float
+    watchlists: tuple[str, ...] = ()
+    watchlist_ids: tuple[int, ...] = ()
+    watchlist_priority: int = 0
+    matched_watchlist: bool = False
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "SignalFacts":
@@ -82,9 +91,23 @@ class SignalFacts:
                 value.get("outcome_success_rate", 0),
                 "outcome_success_rate",
             ),
+            watchlists=_as_text_tuple(
+                value.get("watchlists", value.get("watchlist"))
+            ),
+            watchlist_ids=_as_int_tuple(
+                value.get("watchlist_ids", value.get("watchlist_id"))
+            ),
+            watchlist_priority=int(
+                _number(value.get("watchlist_priority", 0), "watchlist_priority")
+            ),
+            matched_watchlist=bool(value.get("matched_watchlist", False)),
         )
 
-    def value_for(self, field: str) -> str | float | int | None:
+    def value_for(self, field: str) -> Any:
+        if field == "watchlist":
+            return self.watchlists
+        if field == "watchlist_id":
+            return self.watchlist_ids
         return getattr(self, field)
 
 
@@ -194,7 +217,12 @@ def validate_condition(condition: Any, path: str = "condition") -> None:
         raise RuleValidationError(f"Unsupported rule field: {condition['field']}")
     operator = _normalize_operator(condition["operator"])
     value = condition["value"]
-    if field in _TEXT_FIELDS:
+    if field in _BOOLEAN_FIELDS:
+        if operator not in {"eq", "ne"} or not isinstance(value, bool):
+            raise RuleValidationError(
+                f"{path}.value must be true or false and use eq/ne"
+            )
+    elif field in _TEXT_FIELDS:
         if operator not in {"eq", "ne", "contains", "in"}:
             raise RuleValidationError(
                 f"Operator {condition['operator']} is not valid for {field}"
@@ -231,12 +259,20 @@ def evaluate_condition(condition: dict[str, Any], facts: SignalFacts) -> bool:
     operator = _normalize_operator(condition["operator"])
     actual = facts.value_for(field)
     expected = condition["value"]
+    if field in _BOOLEAN_FIELDS:
+        matched = bool(actual) is bool(expected)
+        return matched if operator == "eq" else not matched
     if field in _TEXT_FIELDS:
         return _compare_text(actual, operator, expected)
     return _compare_number(actual, operator, expected)
 
 
 def _compare_text(actual: Any, operator: str, expected: Any) -> bool:
+    if isinstance(actual, (tuple, list, set)):
+        values = tuple(actual)
+        if operator == "ne":
+            return all(_compare_text(item, "ne", expected) for item in values)
+        return any(_compare_text(item, operator, expected) for item in values)
     actual_text = "" if actual is None else str(actual).casefold()
     if operator == "in":
         expected_values = {str(item).casefold() for item in expected}
@@ -250,6 +286,11 @@ def _compare_text(actual: Any, operator: str, expected: Any) -> bool:
 
 
 def _compare_number(actual: Any, operator: str, expected: Any) -> bool:
+    if isinstance(actual, (tuple, list, set)):
+        values = tuple(actual)
+        if operator == "ne":
+            return all(_compare_number(item, "ne", expected) for item in values)
+        return any(_compare_number(item, operator, expected) for item in values)
     actual_number = float(actual or 0)
     if operator == "in":
         return actual_number in {float(item) for item in expected}
@@ -287,3 +328,19 @@ def _optional_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _as_text_tuple(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    return tuple(str(item) for item in value)
+
+
+def _as_int_tuple(value: Any) -> tuple[int, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (str, int)):
+        return (int(value),)
+    return tuple(int(item) for item in value)

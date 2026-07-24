@@ -8,6 +8,7 @@ from pathlib import Path
 
 from app.analytics.historical import HistoricalAnalyticsService, HistoricalThresholds
 from app.db.database import Database
+from app.watchlists import WatchlistService
 
 
 SIGNAL_COLUMNS = (
@@ -135,6 +136,57 @@ ENTITY_HISTORY_COLUMNS = (
     "latest_momentum_score",
 )
 
+WATCHLIST_COLUMNS = (
+    "id",
+    "name",
+    "description",
+    "enabled",
+    "priority",
+    "minimum_hype_score",
+    "minimum_momentum_score",
+    "minimum_confidence",
+    "telegram_enabled",
+    "include_in_digest",
+    "dashboard_highlight",
+    "case_insensitive",
+    "token_count",
+    "narrative_count",
+    "signal_count",
+    "evaluated_count",
+    "success_rate",
+    "last_matched_at",
+    "created_at",
+    "updated_at",
+)
+
+WATCHLIST_ITEM_COLUMNS = (
+    "id",
+    "watchlist_id",
+    "watchlist_name",
+    "item_type",
+    "item_value",
+    "created_at",
+)
+
+WATCHLIST_SIGNAL_COLUMNS = (
+    "watchlist_id",
+    "watchlist_name",
+    "signal_id",
+    "signal_created_at",
+    "matched_at",
+    "matched_item_types",
+    "matched_item_values",
+    "signal_type",
+    "token",
+    "narrative",
+    "hype_score",
+    "momentum_score",
+    "confidence",
+    "mention_count",
+    "action",
+    "outcome_status",
+)
+
 
 @dataclass(frozen=True)
 class ExportedCSV:
@@ -170,9 +222,17 @@ class CSVExportService:
         from_date: date | None = None,
         to_date: date | None = None,
         history_period: str = "30d",
+        watchlist_name: str | None = None,
     ) -> CSVExportResult:
         selected = tuple(dict.fromkeys(kinds))
-        unsupported = set(selected) - {"signals", "outcomes", "performance", "history"}
+        unsupported = set(selected) - {
+            "signals",
+            "outcomes",
+            "performance",
+            "history",
+            "watchlists",
+            "watchlist_signals",
+        }
         if unsupported:
             raise ValueError(f"Unsupported CSV export type: {sorted(unsupported)[0]}")
         if from_date and to_date and from_date > to_date:
@@ -192,6 +252,19 @@ class CSVExportService:
             files.extend(self._export_performance(timestamp, from_value, to_value))
         if "history" in selected:
             files.extend(self._export_history(timestamp, history_period))
+        if "watchlists" in selected:
+            files.extend(self._export_watchlists(timestamp))
+        if "watchlist_signals" in selected:
+            if not watchlist_name:
+                raise ValueError("Watchlist name is required for watchlist signal export")
+            files.append(
+                self._export_watchlist_signals(
+                    timestamp,
+                    watchlist_name,
+                    from_value,
+                    to_value,
+                )
+            )
         return CSVExportResult(tuple(files))
 
     def _export_signals(
@@ -394,6 +467,97 @@ class CSVExportService:
             path = self.output_dir / f"{stem}_{timestamp}_{suffix}.csv"
             suffix += 1
         return path
+
+    def _export_watchlists(self, timestamp: str) -> tuple[ExportedCSV, ...]:
+        service = WatchlistService(self.database)
+        watchlist_rows = []
+        item_rows = []
+        for watchlist in service.list_watchlists():
+            report = service.report(watchlist.id)
+            token_count = sum(item.item_type == "token" for item in report.items)
+            narrative_count = sum(
+                item.item_type == "narrative" for item in report.items
+            )
+            watchlist_rows.append(
+                {
+                    **watchlist.as_dict(),
+                    "token_count": token_count,
+                    "narrative_count": narrative_count,
+                    "signal_count": report.signals_count,
+                    "evaluated_count": report.evaluated_count,
+                    "success_rate": report.success_rate,
+                    "last_matched_at": report.last_matched_at,
+                }
+            )
+            item_rows.extend(
+                {
+                    **item.as_dict(),
+                    "watchlist_name": watchlist.name,
+                }
+                for item in report.items
+            )
+        watchlists_path = self._write(
+            "watchlists",
+            timestamp,
+            WATCHLIST_COLUMNS,
+            watchlist_rows,
+        )
+        items_path = self._write(
+            "watchlist_items",
+            timestamp,
+            WATCHLIST_ITEM_COLUMNS,
+            item_rows,
+        )
+        return (
+            ExportedCSV("watchlists", watchlists_path, len(watchlist_rows)),
+            ExportedCSV("watchlist_items", items_path, len(item_rows)),
+        )
+
+    def _export_watchlist_signals(
+        self,
+        timestamp: str,
+        watchlist_name: str,
+        from_date: str | None,
+        to_date: str | None,
+    ) -> ExportedCSV:
+        service = WatchlistService(self.database)
+        watchlist = service.get_watchlist(watchlist_name)
+        if watchlist is None:
+            raise ValueError(f"Watchlist '{watchlist_name}' does not exist")
+        rows = []
+        for row in self.database.get_watchlist_signals(watchlist.id, limit=None):
+            signal_date = str(row["timestamp"] or "")[:10]
+            if from_date and signal_date < from_date:
+                continue
+            if to_date and signal_date > to_date:
+                continue
+            rows.append(
+                {
+                    "watchlist_id": watchlist.id,
+                    "watchlist_name": watchlist.name,
+                    "signal_id": row["id"],
+                    "signal_created_at": _iso_timestamp(row["timestamp"]),
+                    "matched_at": _iso_timestamp(row["matched_at"]),
+                    "matched_item_types": row["matched_item_types"],
+                    "matched_item_values": row["matched_item_values"],
+                    "signal_type": row["signal_type"],
+                    "token": row["token"],
+                    "narrative": row["narrative"],
+                    "hype_score": row["hype_score"],
+                    "momentum_score": row["momentum_score"],
+                    "confidence": row["confidence"],
+                    "mention_count": row["mentions_count"],
+                    "action": row["action"],
+                    "outcome_status": row["outcome_status"],
+                }
+            )
+        path = self._write(
+            "watchlist_signals",
+            timestamp,
+            WATCHLIST_SIGNAL_COLUMNS,
+            rows,
+        )
+        return ExportedCSV("watchlist_signals", path, len(rows))
 
 
 def _cell(value: object) -> object:

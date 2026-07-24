@@ -57,6 +57,11 @@ from app.scoring.momentum_score import NarrativeMomentum, calculate_momentum_sco
 from app.scoring.opportunity_score import build_opportunity
 from app.scoring.signal_outcomes import OutcomeEvaluator, OutcomeThresholds
 from app.rules import RuleService, RuleValidationError, SignalFacts
+from app.watchlists import (
+    WatchlistService,
+    WatchlistValidationError,
+    format_watchlist_report,
+)
 from app.sources.local_client import load_sample_posts
 from app.sources.rss_client import RSSClient, load_rss_feeds
 from app.sources.x_client import XClient, XPost
@@ -200,6 +205,16 @@ def parse_args() -> argparse.Namespace:
         help="Export historical summary, timeline, narrative, and token CSV files",
     )
     parser.add_argument(
+        "--export-watchlists-csv",
+        action="store_true",
+        help="Export watchlists and watchlist items to CSV",
+    )
+    parser.add_argument(
+        "--export-watchlist-signals-csv",
+        metavar="NAME",
+        help="Export signals associated with one watchlist",
+    )
+    parser.add_argument(
         "--export-csv",
         choices=("signals", "outcomes", "performance", "all"),
         help="Export one CSV dataset or all available datasets",
@@ -298,7 +313,135 @@ def parse_args() -> argparse.Namespace:
         "--signal-json",
         help="Signal facts JSON for --test-rule; defaults to the latest signal",
     )
+    parser.add_argument("--list-watchlists", action="store_true")
+    parser.add_argument("--create-watchlist", metavar="NAME")
+    parser.add_argument("--delete-watchlist", metavar="NAME")
+    parser.add_argument("--enable-watchlist", metavar="NAME")
+    parser.add_argument("--disable-watchlist", metavar="NAME")
+    parser.add_argument(
+        "--add-watchlist-token",
+        nargs=2,
+        metavar=("WATCHLIST", "TOKEN"),
+    )
+    parser.add_argument(
+        "--add-watchlist-narrative",
+        nargs=2,
+        metavar=("WATCHLIST", "NARRATIVE"),
+    )
+    parser.add_argument(
+        "--remove-watchlist-item",
+        nargs=2,
+        metavar=("WATCHLIST", "ITEM"),
+    )
+    parser.add_argument("--watchlist-report", metavar="NAME")
+    parser.add_argument("--watchlist-description", default="")
+    parser.add_argument("--watchlist-priority", type=int, default=0)
+    parser.add_argument("--watchlist-minimum-hype", type=float, default=0)
+    parser.add_argument("--watchlist-minimum-momentum", type=float, default=0)
+    parser.add_argument("--watchlist-minimum-confidence", type=int, default=0)
+    parser.add_argument("--watchlist-no-telegram", action="store_true")
+    parser.add_argument("--watchlist-include-digest", action="store_true")
+    parser.add_argument("--watchlist-no-highlight", action="store_true")
+    parser.add_argument("--watchlist-case-sensitive", action="store_true")
     return parser.parse_args()
+
+
+def requested_watchlist_command(args: argparse.Namespace) -> bool:
+    return bool(
+        args.list_watchlists
+        or args.create_watchlist
+        or args.delete_watchlist
+        or args.enable_watchlist
+        or args.disable_watchlist
+        or args.add_watchlist_token
+        or args.add_watchlist_narrative
+        or args.remove_watchlist_item
+        or args.watchlist_report
+    )
+
+
+def run_watchlist_command(args: argparse.Namespace, db: Database) -> None:
+    service = WatchlistService(db)
+    if args.list_watchlists:
+        watchlists = service.list_watchlists()
+        lines = ["Watchlists", ""]
+        for watchlist in watchlists:
+            report = service.report(watchlist.id)
+            lines.append(
+                f"{watchlist.name} | "
+                f"{'enabled' if watchlist.enabled else 'disabled'} | "
+                f"priority {watchlist.priority} | {len(report.items)} items | "
+                f"{report.signals_count} signals"
+            )
+        if not watchlists:
+            lines.append("No watchlists configured.")
+        logger.info("\n%s", "\n".join(lines))
+        return
+    if args.create_watchlist:
+        watchlist = service.create_watchlist(
+            args.create_watchlist,
+            args.watchlist_description,
+            priority=args.watchlist_priority,
+            minimum_hype_score=args.watchlist_minimum_hype,
+            minimum_momentum_score=args.watchlist_minimum_momentum,
+            minimum_confidence=args.watchlist_minimum_confidence,
+            telegram_enabled=not args.watchlist_no_telegram,
+            include_in_digest=args.watchlist_include_digest,
+            dashboard_highlight=not args.watchlist_no_highlight,
+            case_insensitive=not args.watchlist_case_sensitive,
+        )
+        logger.info("Watchlist created: %d | %s", watchlist.id, watchlist.name)
+        return
+    if args.delete_watchlist:
+        if not service.delete_watchlist(args.delete_watchlist):
+            raise WatchlistValidationError(
+                f"Watchlist '{args.delete_watchlist}' does not exist"
+            )
+        logger.info("Watchlist deleted: %s", args.delete_watchlist)
+        return
+    if args.enable_watchlist or args.disable_watchlist:
+        name = args.enable_watchlist or args.disable_watchlist
+        try:
+            watchlist = service.set_enabled(name, bool(args.enable_watchlist))
+        except KeyError as exc:
+            raise WatchlistValidationError(
+                f"Watchlist '{name}' does not exist"
+            ) from exc
+        logger.info(
+            "Watchlist %s: %s",
+            "enabled" if watchlist.enabled else "disabled",
+            watchlist.name,
+        )
+        return
+    item_args = args.add_watchlist_token or args.add_watchlist_narrative
+    if item_args:
+        kind = "token" if args.add_watchlist_token else "narrative"
+        try:
+            item = service.add_item(item_args[0], kind, item_args[1])
+        except KeyError as exc:
+            raise WatchlistValidationError(
+                f"Watchlist '{item_args[0]}' does not exist"
+            ) from exc
+        logger.info("Watchlist item added: %s | %s", item.item_type, item.item_value)
+        return
+    if args.remove_watchlist_item:
+        name, item = args.remove_watchlist_item
+        try:
+            removed = service.remove_item(name, item)
+        except KeyError as exc:
+            raise WatchlistValidationError(f"Watchlist '{name}' does not exist") from exc
+        if not removed:
+            raise WatchlistValidationError(f"Item '{item}' was not found in '{name}'")
+        logger.info("Watchlist item removed: %s | %s", name, item)
+        return
+    if args.watchlist_report:
+        try:
+            report = service.report(args.watchlist_report)
+        except KeyError as exc:
+            raise WatchlistValidationError(
+                f"Watchlist '{args.watchlist_report}' does not exist"
+            ) from exc
+        logger.info("\n%s", format_watchlist_report(report))
 
 
 def requested_rule_command(args: argparse.Namespace) -> bool:
@@ -406,6 +549,7 @@ def _latest_signal_facts(db: Database) -> SignalFacts:
             "No saved signal is available; provide --signal-json"
         )
     row = rows[0]
+    context = db.get_signal_watchlist_context(int(row["id"]))
     return SignalFacts(
         token=row["token"],
         narrative=row["narrative"],
@@ -417,6 +561,10 @@ def _latest_signal_facts(db: Database) -> SignalFacts:
             row["token"],
             row["narrative"],
         ),
+        watchlists=tuple(context["names"]),
+        watchlist_ids=tuple(context["ids"]),
+        watchlist_priority=int(context["highest_priority"]),
+        matched_watchlist=bool(context["matched_any"]),
     )
 
 
@@ -430,6 +578,10 @@ def requested_csv_exports(args: argparse.Namespace) -> tuple[str, ...]:
         kinds.append("performance")
     if args.export_history_csv:
         kinds.append("history")
+    if args.export_watchlists_csv:
+        kinds.append("watchlists")
+    if args.export_watchlist_signals_csv:
+        kinds.append("watchlist_signals")
     if args.export_csv == "all":
         kinds.extend(("signals", "outcomes", "performance"))
     elif args.export_csv:
@@ -445,6 +597,7 @@ def run_csv_exports(
     to_date: date | None = None,
     history_period: str = "30d",
     history_thresholds: HistoricalThresholds | None = None,
+    watchlist_name: str | None = None,
 ) -> CSVExportResult:
     result = CSVExportService(
         db,
@@ -455,6 +608,7 @@ def run_csv_exports(
         from_date,
         to_date,
         history_period,
+        watchlist_name,
     )
     lines = ["CSV export complete", ""]
     labels = (
@@ -466,6 +620,9 @@ def run_csv_exports(
         ("history_timeline", "Historical timeline rows exported"),
         ("narrative_history", "Narrative history rows exported"),
         ("token_history", "Token history rows exported"),
+        ("watchlists", "Watchlists exported"),
+        ("watchlist_items", "Watchlist items exported"),
+        ("watchlist_signals", "Watchlist signals exported"),
     )
     for kind, label in labels:
         if any(item.kind == kind for item in result.files):
@@ -845,14 +1002,16 @@ def build_daily_digest(db: Database) -> DailyDigest:
         f"{growth_text}"
     )
     digest_signals = db.get_rule_flagged_signals("include_in_digest", limit=5)
-    if digest_signals:
+    watchlist_digest_signals = db.get_watchlist_digest_signals(limit=5)
+    combined_digest_signals = [*digest_signals, *watchlist_digest_signals]
+    if combined_digest_signals:
         digest_names = list(
             dict.fromkeys(
                 str(row["token"] or row["narrative"] or "Unknown")
-                for row in digest_signals
+                for row in combined_digest_signals
             )
         )
-        final_summary += " Smart-rule watchlist: " + ", ".join(digest_names) + "."
+        final_summary += " Focused signals: " + ", ".join(digest_names) + "."
     return DailyDigest(
         top_tokens=token_items[:5],
         top_narratives=narrative_items[:5],
@@ -1128,9 +1287,12 @@ def poll_telegram_performance(
     if not telegram:
         return
     try:
-        handled = telegram.poll_performance_commands(build_outcome_report(db))
+        handled = telegram.poll_commands(
+            build_outcome_report(db),
+            WatchlistService(db),
+        )
         if handled:
-            logger.info("Handled %d Telegram /performance command(s)", handled)
+            logger.info("Handled %d Telegram command(s)", handled)
     except Exception:
         logger.exception("Telegram command polling failed")
 
@@ -1293,6 +1455,9 @@ def main() -> None:
         raise SystemExit(1)
 
     try:
+        if requested_watchlist_command(args):
+            run_watchlist_command(args, db)
+            return
         if requested_rule_command(args):
             run_rule_command(args, db)
             return
@@ -1309,6 +1474,7 @@ def main() -> None:
                     growth_percent=config.history_growth_threshold,
                     minimum_activity=config.history_minimum_activity,
                 ),
+                args.export_watchlist_signals_csv,
             )
         elif args.top_opportunities:
             print_and_send_opportunity_report(db, build_telegram(config, args.no_telegram))

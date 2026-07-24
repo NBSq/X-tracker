@@ -12,9 +12,10 @@ import sqlite3
 
 from app.config import load_config
 from app.analytics.historical import HistoricalThresholds
-from app.events import EventBus, NarrativeDetected, PerformanceUpdated
+from app.events import EventBus, NarrativeDetected, PerformanceUpdated, WatchlistMatched
 from app.dashboard.service import DashboardService
 from app.rules import RuleValidationError
+from app.watchlists import WatchlistValidationError
 
 
 DASHBOARD_DIR = Path(__file__).resolve().parent
@@ -37,11 +38,47 @@ class RuleUpdatePayload(BaseModel):
     action: list[str] | str | None = None
 
 
+class WatchlistCreatePayload(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=500)
+    enabled: bool = True
+    priority: int = Field(default=0, ge=0, le=100)
+    minimum_hype_score: float = Field(default=0, ge=0, le=100)
+    minimum_momentum_score: float = Field(default=0, ge=0, le=100)
+    minimum_confidence: int = Field(default=0, ge=0, le=10)
+    telegram_enabled: bool = True
+    include_in_digest: bool = False
+    dashboard_highlight: bool = True
+    case_insensitive: bool = True
+
+
+class WatchlistUpdatePayload(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=500)
+    enabled: bool | None = None
+    priority: int | None = Field(default=None, ge=0, le=100)
+    minimum_hype_score: float | None = Field(default=None, ge=0, le=100)
+    minimum_momentum_score: float | None = Field(default=None, ge=0, le=100)
+    minimum_confidence: int | None = Field(default=None, ge=0, le=10)
+    telegram_enabled: bool | None = None
+    include_in_digest: bool | None = None
+    dashboard_highlight: bool | None = None
+    case_insensitive: bool | None = None
+
+
+class WatchlistItemPayload(BaseModel):
+    item_type: str = Field(pattern="^(token|narrative)$")
+    item_value: str = Field(min_length=1, max_length=120)
+
+
 class DashboardEventState:
     def __init__(self) -> None:
         self.last_event_at: str | None = None
 
-    def handle(self, event: PerformanceUpdated | NarrativeDetected) -> None:
+    def handle(
+        self,
+        event: PerformanceUpdated | NarrativeDetected | WatchlistMatched,
+    ) -> None:
         self.last_event_at = datetime.now(timezone.utc).isoformat()
 
 
@@ -62,6 +99,7 @@ def create_app(
     if event_bus is not None:
         event_bus.subscribe(PerformanceUpdated, event_state.handle)
         event_bus.subscribe(NarrativeDetected, event_state.handle)
+        event_bus.subscribe(WatchlistMatched, event_state.handle)
 
     app = FastAPI(
         title="x-narrative-tracker Analytics",
@@ -99,6 +137,16 @@ def create_app(
             return HTTPException(status_code=409, detail="Rule name already exists")
         return HTTPException(status_code=422, detail=str(exc))
 
+    def watchlist_error(exc: Exception) -> HTTPException:
+        if isinstance(exc, KeyError):
+            return HTTPException(status_code=404, detail="Watchlist not found")
+        if isinstance(exc, sqlite3.IntegrityError):
+            return HTTPException(
+                status_code=409,
+                detail="Watchlist name or item already exists",
+            )
+        return HTTPException(status_code=422, detail=str(exc))
+
     @app.get("/", response_class=HTMLResponse)
     def overview_page(request: Request):
         return render(
@@ -109,12 +157,14 @@ def create_app(
         )
 
     @app.get("/signals", response_class=HTMLResponse)
-    def signals_page(request: Request):
+    def signals_page(request: Request, watchlist_id: int | None = None):
         return render(
             request,
             "signals.html",
             "signals",
-            signals=service.signals(),
+            signals=service.signals(watchlist_id=watchlist_id),
+            watchlists=service.watchlists(),
+            selected_watchlist_id=watchlist_id,
             status=service.status(),
         )
 
@@ -129,14 +179,20 @@ def create_app(
         )
 
     @app.get("/history", response_class=HTMLResponse)
-    def history_page(request: Request, period: str = "30d"):
+    def history_page(
+        request: Request,
+        period: str = "30d",
+        watchlist_id: int | None = None,
+    ):
         selected = valid_period(period)
         return render(
             request,
             "history.html",
             "history",
-            history=service.history(selected),
+            history=service.history(selected, watchlist_id),
             selected_period=selected,
+            watchlists=service.watchlists(),
+            selected_watchlist_id=watchlist_id,
             status=service.status(),
         )
 
@@ -179,12 +235,14 @@ def create_app(
         window: int | None = Query(default=None, ge=1),
         token: str | None = None,
         narrative: str | None = None,
+        watchlist_id: int | None = None,
     ):
         filters = {
             "status": status,
             "window": window,
             "token": token,
             "narrative": narrative,
+            "watchlist_id": watchlist_id,
         }
         return render(
             request,
@@ -195,9 +253,11 @@ def create_app(
                 evaluation_window_hours=window,
                 token=token,
                 narrative=narrative,
+                watchlist_id=watchlist_id,
             ),
-            summary=service.outcome_summary(),
+            summary=service.outcome_summary(watchlist_id=watchlist_id),
             filters=filters,
+            watchlists=service.watchlists(),
             status=service.status(),
         )
 
@@ -248,17 +308,66 @@ def create_app(
             status=service.status(),
         )
 
+    @app.get("/watchlists", response_class=HTMLResponse)
+    def watchlists_page(request: Request):
+        return render(
+            request,
+            "watchlists.html",
+            "watchlists",
+            watchlists=service.watchlists(),
+            status=service.status(),
+        )
+
+    @app.get("/watchlists/new", response_class=HTMLResponse)
+    def watchlist_create_page(request: Request):
+        return render(
+            request,
+            "watchlist_form.html",
+            "watchlists",
+            watchlist=None,
+            status=service.status(),
+        )
+
+    @app.get("/watchlists/{watchlist_id}", response_class=HTMLResponse)
+    def watchlist_detail_page(request: Request, watchlist_id: int):
+        watchlist = service.watchlist(watchlist_id)
+        if watchlist is None:
+            raise HTTPException(status_code=404, detail="Watchlist not found")
+        return render(
+            request,
+            "watchlist_detail.html",
+            "watchlists",
+            report=watchlist,
+            status=service.status(),
+        )
+
+    @app.get("/watchlists/{watchlist_id}/edit", response_class=HTMLResponse)
+    def watchlist_edit_page(request: Request, watchlist_id: int):
+        watchlist = service.watchlist(watchlist_id)
+        if watchlist is None:
+            raise HTTPException(status_code=404, detail="Watchlist not found")
+        return render(
+            request,
+            "watchlist_form.html",
+            "watchlists",
+            watchlist=watchlist["watchlist"],
+            status=service.status(),
+        )
+
     @app.get("/api/signals")
-    def signals_api(limit: int = Query(default=50, ge=1, le=200)):
-        return {"signals": service.signals(limit)}
+    def signals_api(
+        limit: int = Query(default=50, ge=1, le=200),
+        watchlist_id: int | None = None,
+    ):
+        return {"signals": service.signals(limit, watchlist_id)}
 
     @app.get("/api/performance")
     def performance_api():
         return service.performance()
 
     @app.get("/api/history/summary")
-    def history_summary_api(period: str = "30d"):
-        data = service.history(valid_period(period))
+    def history_summary_api(period: str = "30d", watchlist_id: int | None = None):
+        data = service.history(valid_period(period), watchlist_id)
         return {
             "period": data["period"],
             "generated_at": data["generated_at"],
@@ -266,18 +375,18 @@ def create_app(
         }
 
     @app.get("/api/history/timeline")
-    def history_timeline_api(period: str = "30d"):
-        data = service.history(valid_period(period))
+    def history_timeline_api(period: str = "30d", watchlist_id: int | None = None):
+        data = service.history(valid_period(period), watchlist_id)
         return {"period": data["period"], "timeline": data["timeline"]}
 
     @app.get("/api/history/narratives")
-    def history_narratives_api(period: str = "30d"):
-        data = service.history(valid_period(period))
+    def history_narratives_api(period: str = "30d", watchlist_id: int | None = None):
+        data = service.history(valid_period(period), watchlist_id)
         return {"period": data["period"], "narratives": data["narratives"]}
 
     @app.get("/api/history/tokens")
-    def history_tokens_api(period: str = "30d"):
-        data = service.history(valid_period(period))
+    def history_tokens_api(period: str = "30d", watchlist_id: int | None = None):
+        data = service.history(valid_period(period), watchlist_id)
         return {"period": data["period"], "tokens": data["tokens"]}
 
     @app.get("/api/history/narratives/{name:path}")
@@ -302,6 +411,7 @@ def create_app(
         token: str | None = None,
         narrative: str | None = None,
         period_hours: int | None = Query(default=None, ge=1),
+        watchlist_id: int | None = None,
     ):
         return {"outcomes": service.outcomes(
             limit=limit,
@@ -310,13 +420,15 @@ def create_app(
             token=token,
             narrative=narrative,
             period_hours=period_hours,
+            watchlist_id=watchlist_id,
         )}
 
     @app.get("/api/outcomes/summary")
     def outcomes_summary_api(
         period_hours: int | None = Query(default=None, ge=1),
+        watchlist_id: int | None = None,
     ):
-        return service.outcome_summary(period_hours)
+        return service.outcome_summary(period_hours, watchlist_id)
 
     @app.get("/api/outcomes/{signal_id}")
     def signal_outcomes_api(signal_id: int):
@@ -369,6 +481,92 @@ def create_app(
     def delete_rule_api(rule_id: int):
         if not service.delete_rule(rule_id):
             raise HTTPException(status_code=404, detail="Rule not found")
+
+    @app.get("/api/watchlists")
+    def watchlists_api(enabled: bool | None = None):
+        return {"watchlists": service.watchlists(enabled)}
+
+    @app.post("/api/watchlists", status_code=status.HTTP_201_CREATED)
+    def create_watchlist_api(payload: WatchlistCreatePayload):
+        try:
+            return service.create_watchlist(**payload.model_dump())
+        except (WatchlistValidationError, sqlite3.IntegrityError) as exc:
+            raise watchlist_error(exc) from exc
+
+    @app.get("/api/watchlists/{watchlist_id}")
+    def watchlist_api(watchlist_id: int):
+        result = service.watchlist(watchlist_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Watchlist not found")
+        return result
+
+    @app.put("/api/watchlists/{watchlist_id}")
+    def update_watchlist_api(watchlist_id: int, payload: WatchlistUpdatePayload):
+        changes = {
+            key: value
+            for key, value in payload.model_dump().items()
+            if value is not None
+        }
+        try:
+            return service.update_watchlist(watchlist_id, **changes)
+        except (KeyError, WatchlistValidationError, sqlite3.IntegrityError) as exc:
+            raise watchlist_error(exc) from exc
+
+    @app.delete(
+        "/api/watchlists/{watchlist_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    def delete_watchlist_api(watchlist_id: int):
+        if not service.delete_watchlist(watchlist_id):
+            raise HTTPException(status_code=404, detail="Watchlist not found")
+
+    @app.post(
+        "/api/watchlists/{watchlist_id}/items",
+        status_code=status.HTTP_201_CREATED,
+    )
+    def add_watchlist_item_api(watchlist_id: int, payload: WatchlistItemPayload):
+        try:
+            return service.add_watchlist_item(
+                watchlist_id,
+                payload.item_type,
+                payload.item_value,
+            )
+        except (KeyError, WatchlistValidationError, sqlite3.IntegrityError) as exc:
+            raise watchlist_error(exc) from exc
+
+    @app.delete(
+        "/api/watchlists/{watchlist_id}/items/{item_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    def remove_watchlist_item_api(watchlist_id: int, item_id: int):
+        try:
+            removed = service.remove_watchlist_item(watchlist_id, item_id)
+        except KeyError as exc:
+            raise watchlist_error(exc) from exc
+        if not removed:
+            raise HTTPException(status_code=404, detail="Watchlist item not found")
+
+    @app.get("/api/watchlists/{watchlist_id}/signals")
+    def watchlist_signals_api(
+        watchlist_id: int,
+        limit: int = Query(default=50, ge=1, le=200),
+    ):
+        if service.watchlist(watchlist_id) is None:
+            raise HTTPException(status_code=404, detail="Watchlist not found")
+        return {"signals": service.signals(limit, watchlist_id)}
+
+    @app.get("/api/watchlists/{watchlist_id}/performance")
+    def watchlist_performance_api(watchlist_id: int):
+        result = service.watchlist(watchlist_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Watchlist not found")
+        return result
+
+    @app.get("/api/watchlists/{watchlist_id}/history")
+    def watchlist_history_api(watchlist_id: int, period: str = "30d"):
+        if service.watchlist(watchlist_id) is None:
+            raise HTTPException(status_code=404, detail="Watchlist not found")
+        return service.history(valid_period(period), watchlist_id)
 
     return app
 

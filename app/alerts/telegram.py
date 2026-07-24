@@ -14,6 +14,7 @@ from app.scoring.opportunity_score import NarrativeOpportunity
 
 if TYPE_CHECKING:
     from app.rules.models import SignalFacts
+    from app.watchlists.service import WatchlistService
 
 
 @dataclass(frozen=True)
@@ -146,12 +147,16 @@ class TelegramAlerter:
         self._command_key = (bot_token, str(chat_id))
         self._update_offset = self._command_offsets.get(self._command_key)
 
-    def send_hype_alert(self, alert: HypeAlert) -> None:
+    def send_hype_alert(
+        self,
+        alert: HypeAlert,
+        watchlist_names: tuple[str, ...] = (),
+    ) -> None:
         response = requests.post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
             json={
                 "chat_id": self.chat_id,
-                "text": format_telegram_hype_alert(alert),
+                "text": format_telegram_hype_alert(alert, watchlist_names),
                 "parse_mode": "HTML",
             },
             timeout=30,
@@ -273,6 +278,13 @@ class TelegramAlerter:
         response.raise_for_status()
 
     def poll_performance_commands(self, report: SignalOutcomeReport) -> int:
+        return self.poll_commands(report, None)
+
+    def poll_commands(
+        self,
+        report: SignalOutcomeReport,
+        watchlists: WatchlistService | None,
+    ) -> int:
         params: dict[str, object] = {
             "timeout": 0,
             "allowed_updates": '["message"]',
@@ -292,14 +304,42 @@ class TelegramAlerter:
             self._command_offsets[self._command_key] = self._update_offset
             message = update.get("message") or {}
             chat_id = str((message.get("chat") or {}).get("id", ""))
-            command = str(message.get("text", "")).split(maxsplit=1)[0]
+            text = str(message.get("text", "")).strip()
+            parts = text.split(maxsplit=1)
+            command = parts[0] if parts else ""
             if chat_id != str(self.chat_id):
                 continue
-            if command.split("@", 1)[0].lower() != "/performance":
-                continue
-            self.send_outcome_report(report)
-            handled += 1
+            command = command.split("@", 1)[0].lower()
+            if command == "/performance":
+                self.send_outcome_report(report)
+                handled += 1
+            elif command == "/watchlists" and watchlists is not None:
+                self._send_html(format_telegram_watchlists(watchlists))
+                handled += 1
+            elif command == "/watchlist" and watchlists is not None:
+                name = parts[1].strip() if len(parts) > 1 else ""
+                watchlist = watchlists.get_watchlist(name) if name else None
+                if watchlist is None:
+                    self._send_html(
+                        "<b>Watchlist not found</b>\n"
+                        "Use <code>/watchlist &lt;name&gt;</code>."
+                    )
+                else:
+                    self._send_html(
+                        format_telegram_watchlist_report(
+                            watchlists.report(watchlist.id)
+                        )
+                    )
+                handled += 1
         return handled
+
+    def _send_html(self, text: str) -> None:
+        response = requests.post(
+            f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
+            json={"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"},
+            timeout=30,
+        )
+        response.raise_for_status()
 
 
 def format_hype_alert(alert: HypeAlert) -> str:
@@ -325,7 +365,10 @@ def format_hype_alert(alert: HypeAlert) -> str:
     )
 
 
-def format_telegram_hype_alert(alert: HypeAlert) -> str:
+def format_telegram_hype_alert(
+    alert: HypeAlert,
+    watchlist_names: tuple[str, ...] = (),
+) -> str:
     posts = "\n".join(
         f"{index}. @{escape(post.username)}: {escape(post.text[:300])}"
         for index, post in enumerate(alert.top_posts, start=1)
@@ -335,6 +378,13 @@ def format_telegram_hype_alert(alert: HypeAlert) -> str:
     momentum = "\n".join(
         f"{escape(item.name)} {item.score}" for item in alert.momentum
     )
+    watchlists = (
+        "<b>Watchlists:</b> "
+        + ", ".join(escape(name) for name in watchlist_names)
+        + "\n\n"
+        if watchlist_names
+        else ""
+    )
     return (
         "🚨 <b>Crypto Hype Spike</b>\n"
         f"<b>Signal:</b> {escape(_alert_title(alert))}\n\n"
@@ -343,12 +393,56 @@ def format_telegram_hype_alert(alert: HypeAlert) -> str:
         f"{_html_components(alert)}"
         f"<b>Confidence:</b> {alert.insight.confidence}/10\n"
         f"<b>Action:</b> {escape(alert.insight.action)}\n\n"
+        f"{watchlists}"
         f"<b>Why it matters:</b>\n{escape(alert.insight.explanation)}\n\n"
         f"<b>Top posts:</b>\n{posts or 'No posts available'}\n\n"
         "<b>Related:</b>\n"
         f"<b>Tokens:</b> {tokens}\n"
         f"<b>Narratives:</b> {narratives}"
         f"\n\n<b>Narrative Momentum:</b>\n{momentum or 'None'}"
+    )
+
+
+def format_telegram_watchlists(service: WatchlistService) -> str:
+    watchlists = service.list_watchlists(enabled=True)
+    if not watchlists:
+        return "<b>Watchlists</b>\n\nNo enabled watchlists."
+    lines = ["<b>Watchlists</b>", ""]
+    for watchlist in watchlists:
+        report = service.report(watchlist.id)
+        rate = (
+            f"{report.success_rate:.1f}%"
+            if report.success_rate is not None
+            else "collecting outcomes"
+        )
+        lines.append(
+            f"<b>{escape(watchlist.name)}</b> - {len(report.items)} items, "
+            f"{report.signals_count} recent signals, {rate} success"
+        )
+    return "\n".join(lines)
+
+
+def format_telegram_watchlist_report(report) -> str:
+    rate = (
+        f"{report.success_rate:.1f}%"
+        if report.success_rate is not None
+        else "collecting outcomes"
+    )
+    latest = "\n".join(
+        f"{index}. {escape(str(item['token'] or item['narrative'] or 'Unknown'))} - "
+        f"{float(item['hype_score']):.1f} hype - "
+        f"{escape(str(item['outcome_status'] or 'Pending'))}"
+        for index, item in enumerate(report.latest_matches[:5], start=1)
+    ) or "None"
+    return (
+        f"<b>Watchlist: {escape(report.watchlist.name)}</b>\n\n"
+        f"Status: {'Enabled' if report.watchlist.enabled else 'Disabled'}\n"
+        f"Priority: {report.watchlist.priority}\n"
+        f"Items: {len(report.items)}\n"
+        f"Recent signals: {report.signals_count}\n"
+        f"Evaluated: {report.evaluated_count}\n"
+        f"Success rate: {rate}\n\n"
+        f"<b>Latest matches</b>\n{latest}"
     )
 
 

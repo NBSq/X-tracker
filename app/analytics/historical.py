@@ -143,11 +143,22 @@ class HistoricalAnalyticsService:
         self.thresholds = thresholds or HistoricalThresholds()
         self.clock = clock
 
-    def build_report(self, period: str = "30d") -> HistoricalAnalyticsReport:
+    def build_report(
+        self,
+        period: str = "30d",
+        signal_ids: set[int] | None = None,
+    ) -> HistoricalAnalyticsReport:
         spec = parse_period(period)
         now = _as_utc(self.clock(timezone.utc))
         all_signals = list(self.database.get_signals(limit=None))
         all_outcomes = list(self.database.get_signal_outcomes(limit=None))
+        if signal_ids is not None:
+            all_signals = [
+                row for row in all_signals if int(row["id"]) in signal_ids
+            ]
+            all_outcomes = [
+                row for row in all_outcomes if int(row["signal_id"]) in signal_ids
+            ]
         start, end, previous_start = _period_boundaries(spec, now, all_signals)
         current_signals = _between(all_signals, "timestamp", start, end)
         current_outcomes = _latest_outcomes(

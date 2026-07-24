@@ -160,7 +160,9 @@ async function refreshStatus() {
 }
 
 async function refreshSignals(limit = 50) {
-  const data = await getJson(`/api/signals?limit=${limit}`);
+  const watchlistId = new URLSearchParams(window.location.search).get("watchlist_id");
+  const suffix = watchlistId ? `&watchlist_id=${encodeURIComponent(watchlistId)}` : "";
+  const data = await getJson(`/api/signals?limit=${limit}${suffix}`);
   const body = document.getElementById("signals-body");
   if (body) body.innerHTML = signalRows(data.signals);
 }
@@ -189,7 +191,7 @@ async function refreshOutcomes() {
   const suffix = params.toString() ? `?${params}` : "";
   const [data, summary] = await Promise.all([
     getJson(`/api/outcomes${suffix}`),
-    getJson("/api/outcomes/summary"),
+    getJson(`/api/outcomes/summary${params.toString() ? `?${params}` : ""}`),
   ]);
   setText("outcome-total", summary.signals_evaluated);
   setText("outcome-rate", `${summary.success_rate.toFixed(1)}%`);
@@ -219,11 +221,14 @@ function historyTimelineRows(items) {
 }
 
 async function refreshHistory() {
-  const period = new URLSearchParams(window.location.search).get("period") || "30d";
+  const params = new URLSearchParams(window.location.search);
+  const period = params.get("period") || "30d";
+  const watchlistId = params.get("watchlist_id");
+  const watchlistQuery = watchlistId ? `&watchlist_id=${encodeURIComponent(watchlistId)}` : "";
   const [summaryData, timelineData, narrativeData] = await Promise.all([
-    getJson(`/api/history/summary?period=${encodeURIComponent(period)}`),
-    getJson(`/api/history/timeline?period=${encodeURIComponent(period)}`),
-    getJson(`/api/history/narratives?period=${encodeURIComponent(period)}`),
+    getJson(`/api/history/summary?period=${encodeURIComponent(period)}${watchlistQuery}`),
+    getJson(`/api/history/timeline?period=${encodeURIComponent(period)}${watchlistQuery}`),
+    getJson(`/api/history/narratives?period=${encodeURIComponent(period)}${watchlistQuery}`),
   ]);
   const summary = summaryData.summary;
   setText("history-signals", summary.total_signals);
@@ -277,5 +282,96 @@ async function refreshPage() {
   }
 }
 
+async function watchlistRequest(url, method, body = null) {
+  const response = await fetch(url, {
+    method,
+    headers: body ? {"Content-Type": "application/json"} : {},
+    body: body ? JSON.stringify(body) : null,
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.detail || `Request failed: ${response.status}`);
+  }
+  return response.status === 204 ? null : response.json();
+}
+
+function showWatchlistError(message) {
+  setText("watchlist-error", message);
+}
+
+function watchlistPayload(form) {
+  const data = new FormData(form);
+  return {
+    name: String(data.get("name") || "").trim(),
+    description: String(data.get("description") || "").trim(),
+    priority: Number(data.get("priority") || 0),
+    minimum_hype_score: Number(data.get("minimum_hype_score") || 0),
+    minimum_momentum_score: Number(data.get("minimum_momentum_score") || 0),
+    minimum_confidence: Number(data.get("minimum_confidence") || 0),
+    enabled: data.has("enabled"),
+    telegram_enabled: data.has("telegram_enabled"),
+    include_in_digest: data.has("include_in_digest"),
+    dashboard_highlight: data.has("dashboard_highlight"),
+    case_insensitive: data.has("case_insensitive"),
+  };
+}
+
+function initializeWatchlists() {
+  const form = document.getElementById("watchlist-form");
+  if (form) form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const id = form.dataset.watchlistId;
+      const result = await watchlistRequest(
+        id ? `/api/watchlists/${id}` : "/api/watchlists",
+        id ? "PUT" : "POST",
+        watchlistPayload(form),
+      );
+      window.location.assign(`/watchlists/${result.id}`);
+    } catch (error) {
+      showWatchlistError(error.message);
+    }
+  });
+
+  const itemForm = document.getElementById("watchlist-item-form");
+  if (itemForm) itemForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const data = new FormData(itemForm);
+    try {
+      await watchlistRequest(`/api/watchlists/${itemForm.dataset.watchlistId}/items`, "POST", {
+        item_type: data.get("item_type"),
+        item_value: String(data.get("item_value") || "").trim(),
+      });
+      window.location.reload();
+    } catch (error) {
+      showWatchlistError(error.message);
+    }
+  });
+
+  document.querySelectorAll("[data-watchlist-item]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await watchlistRequest(`/api/watchlists/${button.dataset.watchlistId}/items/${button.dataset.watchlistItem}`, "DELETE");
+        window.location.reload();
+      } catch (error) {
+        showWatchlistError(error.message);
+      }
+    });
+  });
+
+  const deleteButton = document.getElementById("delete-watchlist");
+  if (deleteButton) deleteButton.addEventListener("click", async () => {
+    const id = document.getElementById("watchlist-form").dataset.watchlistId;
+    if (!window.confirm("Delete this watchlist and its signal associations?")) return;
+    try {
+      await watchlistRequest(`/api/watchlists/${id}`, "DELETE");
+      window.location.assign("/watchlists");
+    } catch (error) {
+      showWatchlistError(error.message);
+    }
+  });
+}
+
 window.setInterval(refreshPage, POLL_INTERVAL);
 initializeRules();
+initializeWatchlists();

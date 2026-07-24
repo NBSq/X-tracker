@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ report.watchlist.name }}{% endblock %}
+{% block heading %}{{ report.watchlist.name }}{% endblock %}
+{% block content %}
+<div class="detail-toolbar mb-4">
+  <span class="rule-state rule-state-{{ 'enabled' if report.watchlist.enabled else 'disabled' }}">{{ 'Enabled' if report.watchlist.enabled else 'Disabled' }}</span>
+  <span class="section-meta">Priority {{ report.watchlist.priority }}</span>
+  <a href="/watchlists/{{ report.watchlist.id }}/edit">Edit settings</a>
+</div>
+<section class="metric-grid mb-5" aria-label="Watchlist metrics">
+  <article class="metric-card"><span>30d signals</span><strong>{{ report.signals_count }}</strong></article>
+  <article class="metric-card accent"><span>Success rate</span><strong>{{ '%.1f%%'|format(report.success_rate) if report.success_rate is not none else 'N/A' }}</strong></article>
+  <article class="metric-card"><span>Average hype</span><strong>{{ '%.1f'|format(report.average_hype_score) if report.average_hype_score is not none else 'N/A' }}</strong></article>
+  <article class="metric-card"><span>Average momentum</span><strong>{{ '%.1f'|format(report.average_momentum_score) if report.average_momentum_score is not none else 'N/A' }}</strong></article>
+</section>
+<div class="watchlist-detail-grid">
+  <section class="dashboard-section">
+    <div class="section-heading"><h2>Tracked items</h2><span class="section-meta">Exact normalized matching</span></div>
+    <form id="watchlist-item-form" data-watchlist-id="{{ report.watchlist.id }}" class="filter-bar mb-3">
+      <label>Type<select class="form-select form-select-sm" name="item_type"><option value="token">Token</option><option value="narrative">Narrative</option></select></label>
+      <label>Value<input class="form-control form-control-sm" name="item_value" required maxlength="120" placeholder="SOL"></label>
+      <button class="btn btn-sm btn-dark" type="submit">Add</button>
+    </form>
+    <div class="watchlist-items">{% for item in report['items'] %}<div><span><strong>{{ item.item_value }}</strong><small>{{ item.item_type|capitalize }}</small></span><button class="btn btn-sm btn-outline-danger" type="button" data-watchlist-item="{{ item.id }}" data-watchlist-id="{{ report.watchlist.id }}" aria-label="Remove {{ item.item_value }}">Remove</button></div>{% else %}<p class="empty-state">No tracked items.</p>{% endfor %}</div>
+  </section>
+  <section class="dashboard-section">
+    <div class="section-heading"><h2>Settings</h2></div>
+    <dl class="detail-list">
+      <div><dt>Minimum hype</dt><dd>{{ report.watchlist.minimum_hype_score }}</dd></div>
+      <div><dt>Minimum momentum</dt><dd>{{ report.watchlist.minimum_momentum_score }}</dd></div>
+      <div><dt>Minimum confidence</dt><dd>{{ report.watchlist.minimum_confidence }}/10</dd></div>
+      <div><dt>Telegram</dt><dd>{{ 'On' if report.watchlist.telegram_enabled else 'Off' }}</dd></div>
+      <div><dt>Daily digest</dt><dd>{{ 'Included' if report.watchlist.include_in_digest else 'Excluded' }}</dd></div>
+      <div><dt>Related rules</dt><dd>{{ report.related_rules|length }}</dd></div>
+    </dl>
+  </section>
+</div>
+<section class="dashboard-section mt-5">
+  <div class="section-heading"><h2>Latest matching signals</h2><a href="/signals?watchlist_id={{ report.watchlist.id }}">View all</a></div>
+  <div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Signal</th><th>Hype</th><th>Momentum</th><th>Confidence</th><th>Outcome</th><th>Matched</th></tr></thead><tbody>{% for item in report.latest_matches %}<tr><td><strong>{{ item.token or item.narrative or 'Unknown' }}</strong><small>{{ item.narrative if item.token else '' }}</small></td><td>{{ item.hype_score }}</td><td>{{ item.momentum_score }}</td><td>{{ item.confidence }}/10</td><td>{{ item.outcome_status or 'Pending' }}</td><td>{{ item.matched_at }}</td></tr>{% else %}<tr><td colspan="6" class="empty-state">No signals matched yet.</td></tr>{% endfor %}</tbody></table></div>
+</section>
+<p id="watchlist-error" class="form-error mt-3" role="alert"></p>
+{% endblock %}

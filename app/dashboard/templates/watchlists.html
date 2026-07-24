@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Watchlists{% endblock %}
+{% block heading %}Watchlists{% endblock %}
+{% block content %}
+<div class="section-heading mb-3">
+  <div><h2>Focused alert groups</h2><span class="section-meta">Token and narrative matching</span></div>
+  <a class="btn btn-sm btn-dark" href="/watchlists/new">Create watchlist</a>
+</div>
+<section class="dashboard-section">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0 watchlist-table">
+      <thead><tr><th>Name</th><th>Status</th><th>Priority</th><th>Tokens</th><th>Narratives</th><th>30d signals</th><th>Evaluated</th><th>Success</th><th>Last match</th></tr></thead>
+      <tbody>{% for item in watchlists %}<tr class="{% if item.dashboard_highlight and item.signals_count %}rule-highlight{% endif %}">
+        <td><strong><a href="/watchlists/{{ item.id }}">{{ item.name }}</a></strong><small>{{ item.description or 'No description' }}</small></td>
+        <td><span class="rule-state rule-state-{{ 'enabled' if item.enabled else 'disabled' }}">{{ 'Enabled' if item.enabled else 'Disabled' }}</span></td>
+        <td>{{ item.priority }}</td><td>{{ item.token_count }}</td><td>{{ item.narrative_count }}</td><td>{{ item.signals_count }}</td><td>{{ item.evaluated_count }}</td>
+        <td>{{ '%.1f%%'|format(item.success_rate) if item.success_rate is not none else 'Collecting' }}</td>
+        <td>{{ item.last_matched_at or 'Never' }}</td>
+      </tr>{% else %}<tr><td colspan="9" class="empty-state">No watchlists configured.</td></tr>{% endfor %}</tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

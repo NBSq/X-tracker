@@ -58,6 +58,9 @@ flowchart LR
     Bus --> Performance["Performance Subscriber"]
     Bus --> Telegram["Telegram Subscriber"]
     Bus --> Rules["Smart Alert Rule Engine"]
+    Bus --> Watchlists["Watchlist Matcher"]
+    Watchlists -->|WatchlistMatched| Bus
+    Watchlists --> Focused["Focused Alerts / Associations"]
     Rules --> RuleActions["Telegram / Flags / Digest / CSV"]
     Performance -->|PerformanceUpdated| Bus
     Bus -. Optional live events .-> Dashboard
@@ -85,6 +88,7 @@ The application uses a synchronous, typed, in-process event bus with no external
 | `RSSFetched` | An RSS cycle returns shared posts | Extension point for source telemetry |
 | `NarrativeDetected` | Analysis detects a narrative in a post | Extension point for dashboards and APIs |
 | `SignalCreated` | Hype evaluation creates an alert | SQLite alert storage, performance tracking, smart rules, Telegram |
+| `WatchlistMatched` | A saved signal matches one or more enabled watchlists | Dashboard event state and future focused-alert adapters |
 | `SignalEvaluationRequested` | A configured evaluation window becomes eligible for processing | Outcome evaluator observability and future workers |
 | `SignalEvaluated` | The outcomes engine evaluates a mature signal | SQLite outcome storage, performance updates |
 | `PerformanceUpdated` | Signal or outcome performance changes | Extension point for dashboards and REST APIs |
@@ -149,6 +153,8 @@ app/
   export/csv_exporter.py
   rules/engine.py
   rules/models.py
+  watchlists/models.py
+  watchlists/service.py
   scoring/hype_score.py
   scoring/momentum_score.py
   scoring/signal_outcomes.py
@@ -247,12 +253,13 @@ The dashboard reads analytics from SQLite and provides these pages:
 - `/narratives` 24-hour narrative rankings
 - `/tokens` 24-hour token rankings
 - `/rules` smart alert rule management and rule details
+- `/watchlists` focused-alert groups, settings, matching signals, and outcomes
 
 JSON endpoints are available for signals, performance, outcomes, historical analytics, narratives, tokens, rules, and system status. Pages poll analytics endpoints every 30 seconds, so collector and dashboard processes can share the same SQLite file without restarting the web server. The Outcomes page filters by status, evaluation window, token, and narrative. The History page selects `7d`, `30d`, `90d`, or `all` and links to narrative and token detail views.
 
 The app factory accepts an optional `EventBus`, allowing an embedded dashboard to subscribe to `PerformanceUpdated` and `NarrativeDetected`. The standard CLI deployment remains database-driven so it also works as a separate process.
 
-The dashboard and rule-management API have no authentication. Keep the default localhost binding unless access is protected by a trusted reverse proxy or private network.
+Signals, Outcomes, and Historical Analytics can be filtered by watchlist. The dashboard and management APIs have no authentication. Keep the default localhost binding unless access is protected by a trusted reverse proxy or private network.
 
 ## Smart Alert Rules
 
@@ -270,7 +277,7 @@ Conditions are JSON expression trees. `AND` and `OR` accept non-empty arrays; `N
 }
 ```
 
-Supported fields are `token`, `narrative`, `hype_score`, `momentum_score`, `confidence`, `mentions`, and `outcome_success_rate`. Text supports `eq`, `ne`, `contains`, and `in`; numeric fields support `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, and the symbol aliases `==`, `!=`, `>`, `>=`, `<`, `<=`. Text comparisons are case-insensitive. Outcome success rate is the percentage of saved successful outcomes for matching token or narrative signals; it is `0` while no evaluated outcomes exist.
+Supported fields are `token`, `narrative`, `hype_score`, `momentum_score`, `confidence`, `mentions`, `outcome_success_rate`, `watchlist`, `watchlist_id`, `watchlist_priority`, and `matched_watchlist`. Text supports `eq`, `ne`, `contains`, and `in`; numeric fields support `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, and the symbol aliases `==`, `!=`, `>`, `>=`, `<`, `<=`. Text comparisons are case-insensitive. Outcome success rate is the percentage of saved successful outcomes for matching token or narrative signals; it is `0` while no evaluated outcomes exist.
 
 Actions:
 
@@ -317,6 +324,45 @@ Example POST body:
   "action": ["telegram", "dashboard_highlight"]
 }
 ```
+
+## Watchlists and Focused Alerts
+
+Watchlists are named token and narrative collections evaluated for every `SignalCreated` event. Enabled watchlists can require minimum hype, momentum, and confidence values. A matching signal is associated once with each matching item, and one aggregate `WatchlistMatched` event is published even when several watchlists match. The regular signal flow remains unchanged.
+
+Token matching is always case-insensitive and strips a leading `$`. Narrative matching collapses repeated whitespace and uses normalized exact matching; it is case-insensitive by default. Fuzzy and substring matching are intentionally not used.
+
+Create a portfolio and add items:
+
+```powershell
+python -m app.main --create-watchlist "Main Portfolio" --watchlist-priority 8 --watchlist-minimum-hype 75
+python -m app.main --add-watchlist-token "Main Portfolio" BTC
+python -m app.main --add-watchlist-token "Main Portfolio" ETH
+python -m app.main --add-watchlist-token "Main Portfolio" SOL
+python -m app.main --add-watchlist-narrative "AI Narratives" "AI Agents"
+python -m app.main --list-watchlists
+python -m app.main --watchlist-report "Main Portfolio"
+```
+
+Management commands also include `--enable-watchlist`, `--disable-watchlist`, `--remove-watchlist-item`, and `--delete-watchlist`. Creation settings include `--watchlist-description`, `--watchlist-minimum-momentum`, `--watchlist-minimum-confidence`, `--watchlist-no-telegram`, `--watchlist-include-digest`, `--watchlist-no-highlight`, and `--watchlist-case-sensitive`.
+
+Telegram supports `/watchlists` and `/watchlist <name>`. A normal spike alert contains one escaped Watchlists section listing all eligible matches; it never sends one copy per matching watchlist.
+
+REST endpoints:
+
+```text
+GET    /api/watchlists
+POST   /api/watchlists
+GET    /api/watchlists/{id}
+PUT    /api/watchlists/{id}
+DELETE /api/watchlists/{id}
+POST   /api/watchlists/{id}/items
+DELETE /api/watchlists/{id}/items/{item_id}
+GET    /api/watchlists/{id}/signals
+GET    /api/watchlists/{id}/performance
+GET    /api/watchlists/{id}/history
+```
+
+Example workflow: create `Main Portfolio`, add BTC, ETH, and SOL, create a smart rule combining `watchlist = "Main Portfolio"` with `hype_score >= 75`, run RSS mode, then review the single focused alert in Telegram and the Watchlist Details dashboard page. Watchlist outcomes measure signal continuation in tracker data, not token price profitability.
 
 ## Source Modes
 
@@ -540,6 +586,8 @@ python -m app.main --export-signals-csv
 python -m app.main --export-outcomes-csv
 python -m app.main --export-performance-csv
 python -m app.main --export-history-csv --period 30d
+python -m app.main --export-watchlists-csv
+python -m app.main --export-watchlist-signals-csv "Main Portfolio"
 python -m app.main --export-csv all
 ```
 
@@ -566,6 +614,9 @@ history_summary_2026-07-21_180000.csv
 history_timeline_2026-07-21_180000.csv
 narrative_history_2026-07-21_180000.csv
 token_history_2026-07-21_180000.csv
+watchlists_2026-07-21_180000.csv
+watchlist_items_2026-07-21_180000.csv
+watchlist_signals_2026-07-21_180000.csv
 ```
 
 Signal columns contain the stored identity, creation time, token/narrative, hype, momentum, mentions, confidence, action, and latest outcome status. Outcome columns contain the signal and evaluation timestamps, evaluation window, baseline/current metrics, changes, status, and notes. No synthetic explanation is added because signal explanations are not persisted in SQLite.
@@ -573,6 +624,8 @@ Signal columns contain the stored identity, creation time, token/narrative, hype
 Performance export creates one overall summary row plus a separate narrative-level file with signal/evaluation counts, status counts, success rate, and average metric changes. Empty result sets still produce files with headers.
 
 `--export-history-csv` reuses the same Excel-compatible writer and creates historical summary, timeline, narrative, and token files for the selected `--period`. Existing `--export-csv all` remains backward compatible and continues to mean signals, outcomes, and performance; historical export is explicit.
+
+`--export-watchlists-csv` writes watchlist definitions, typed settings, counts, performance, and a separate item file. `--export-watchlist-signals-csv` writes one watchlist's matching signal associations and supports the existing `--from-date`, `--to-date`, and `--output-dir` options.
 
 CSV files use deterministic column ordering, standard CSV quoting, ISO 8601 timestamps, and UTF-8 with a byte-order mark for Microsoft Excel compatibility. Numeric values do not include display symbols such as `%`, `+`, or `/100`.
 
@@ -665,6 +718,7 @@ Tests cover:
 - Signal Outcomes evaluation, migration, API, and dashboard behavior
 - CSV headers, encoding, escaping, date filters, aggregate exports, and CLI behavior
 - Smart-rule validation, nested logic, persistence, event handling, actions, CLI, and REST CRUD
+- Watchlist normalization, matching, thresholds, events, reports, Telegram aggregation, dashboard/API CRUD, filters, and CSV exports
 
 ## Contributing
 
@@ -696,8 +750,9 @@ pytest
 - Mature signals are evaluated automatically and stored in `signal_outcomes`.
 - Existing databases are migrated in place with signal mention baselines and the expanded multi-window outcome schema.
 - Smart alert rules live in `alert_rules`; per-signal matches and action markers live in `signal_rule_matches`.
+- Watchlists and items live in `watchlists` and `watchlist_items`; matches live in `signal_watchlists` with a uniqueness constraint per signal, watchlist, type, and value.
 - Historical query indexes for signal timestamps, narrative/token plus timestamp, and outcome evaluation timestamps are added with `CREATE INDEX IF NOT EXISTS`.
-- `--reset-db` clears analyses, alerts, narrative history, momentum snapshots, signal history, outcomes, and rule matches. Rule definitions are preserved and their trigger counters are reset.
+- `--reset-db` clears analyses, alerts, narrative history, momentum snapshots, signal history, outcomes, rule matches, and watchlist signal associations. Rule and watchlist definitions are preserved.
 - Individual post-analysis, feed, OpenAI, and Telegram errors are logged without silently failing.
 
 ## Roadmap
@@ -706,6 +761,7 @@ pytest
 - [x] Add configurable multi-window signal outcome evaluation
 - [x] Add period-aware historical analytics and detail views
 - [x] Add configurable smart alert rules
+- [x] Add configurable token and narrative watchlists
 - [ ] Add source-level reliability and influence weighting
 - [ ] Add semantic clustering for emerging narratives
 - [ ] Add richer interactive charts and momentum sparklines

@@ -5,8 +5,14 @@ import logging
 from app.alerts.telegram import TelegramAlerter
 from app.db.database import Database
 from app.events.bus import EventBus
-from app.events.models import PerformanceUpdated, SignalCreated, SignalEvaluated
+from app.events.models import (
+    PerformanceUpdated,
+    SignalCreated,
+    SignalEvaluated,
+    WatchlistMatched,
+)
 from app.rules.engine import RuleEngine
+from app.watchlists.service import WatchlistService
 
 
 logger = logging.getLogger("x_narrative_tracker")
@@ -64,13 +70,66 @@ class SignalOutcomeStorage:
         self.event_bus.publish(_performance_updated(self.db))
 
 
+class WatchlistSignalMatcher:
+    def __init__(self, db: Database, event_bus: EventBus) -> None:
+        self.db = db
+        self.event_bus = event_bus
+        self.watchlists = WatchlistService(db)
+
+    def __call__(self, event: SignalCreated) -> None:
+        matches = self.watchlists.find_matching_watchlists(event)
+        if not matches:
+            return
+        signal_id = self.db.find_signal_history_id(event.history_record())
+        if signal_id is None:
+            logger.warning("Watchlist matching skipped: signal history row was not found")
+            return
+        self.watchlists.associate_signal(signal_id, matches)
+        items = [item for match in matches for item in match.items]
+        self.event_bus.publish(
+            WatchlistMatched(
+                signal_id=signal_id,
+                watchlist_ids=tuple(match.watchlist.id for match in matches),
+                watchlist_names=tuple(match.watchlist.name for match in matches),
+                matched_tokens=tuple(
+                    dict.fromkeys(
+                        item.item_value for item in items if item.item_type == "token"
+                    )
+                ),
+                matched_narratives=tuple(
+                    dict.fromkeys(
+                        item.item_value
+                        for item in items
+                        if item.item_type == "narrative"
+                    )
+                ),
+                highest_priority=max(match.watchlist.priority for match in matches),
+            )
+        )
+
+
 class TelegramSignalNotifier:
-    def __init__(self, telegram: TelegramAlerter) -> None:
+    def __init__(self, db: Database, telegram: TelegramAlerter) -> None:
+        self.db = db
         self.telegram = telegram
 
     def __call__(self, event: SignalCreated) -> None:
         try:
-            self.telegram.send_hype_alert(event.alert)
+            signal_id = self.db.find_signal_history_id(event.history_record())
+            rows = (
+                self.db.get_signal_watchlists(signal_id, telegram_only=True)
+                if signal_id is not None
+                else []
+            )
+            watchlist_names = (
+                tuple(str(row["name"]) for row in rows)
+                if isinstance(rows, (list, tuple))
+                else ()
+            )
+            if watchlist_names:
+                self.telegram.send_hype_alert(event.alert, watchlist_names)
+            else:
+                self.telegram.send_hype_alert(event.alert)
             name = " + ".join(
                 item for item in (event.token, event.narrative) if item
             )
@@ -85,9 +144,10 @@ def register_default_subscribers(
     telegram: TelegramAlerter | None,
 ) -> None:
     event_bus.subscribe(SignalCreated, SignalPerformanceTracker(db, event_bus))
+    event_bus.subscribe(SignalCreated, WatchlistSignalMatcher(db, event_bus))
     event_bus.subscribe(SignalCreated, RuleEngine(db, telegram))
     if telegram is not None:
-        event_bus.subscribe(SignalCreated, TelegramSignalNotifier(telegram))
+        event_bus.subscribe(SignalCreated, TelegramSignalNotifier(db, telegram))
     event_bus.subscribe(SignalCreated, SignalDatabaseStorage(db))
     event_bus.subscribe(SignalEvaluated, SignalOutcomeStorage(db, event_bus))
 

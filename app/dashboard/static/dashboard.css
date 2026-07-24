@@ -109,6 +109,14 @@ body { background: var(--canvas); color: var(--ink); font-family: Inter, "Segoe 
 .rule-actions legend { color: var(--muted); font-size: 11px; font-weight: 700; }
 .rule-actions label { color: var(--ink); font-size: 12px; }
 .form-error { min-height: 20px; color: var(--red); font-size: 12px; }
+.watchlist-table a { color: var(--ink); text-decoration: none; }
+.watchlist-table a:hover { color: var(--teal); }
+.watchlist-detail-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, .7fr); gap: 36px; align-items: start; }
+.watchlist-items { border-top: 1px solid var(--line); }
+.watchlist-items > div { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 58px; border-bottom: 1px solid var(--line); }
+.watchlist-items strong, .watchlist-items small { display: block; }
+.watchlist-items small { color: var(--muted); font-size: 11px; }
+.watchlist-form-shell { max-width: 760px; }
 
 @media (max-width: 767px) {
   .app-shell { width: min(100% - 24px, 1180px); }
@@ -130,4 +138,5 @@ body { background: var(--canvas); color: var(--ink); font-family: Inter, "Segoe 
   .history-chart-grid { grid-template-columns: 1fr; gap: 28px; }
   .history-ranking-grid { margin-right: 0; margin-left: 0; }
   .rule-layout { grid-template-columns: 1fr; gap: 28px; }
+  .watchlist-detail-grid { grid-template-columns: 1fr; gap: 28px; }
 }

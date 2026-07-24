@@ -124,6 +124,45 @@ class Database:
                 UNIQUE (signal_id, rule_id)
             );
 
+            CREATE TABLE IF NOT EXISTS watchlists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                description TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+                priority INTEGER NOT NULL DEFAULT 0 CHECK(priority BETWEEN 0 AND 100),
+                minimum_hype_score REAL NOT NULL DEFAULT 0 CHECK(minimum_hype_score BETWEEN 0 AND 100),
+                minimum_momentum_score REAL NOT NULL DEFAULT 0 CHECK(minimum_momentum_score BETWEEN 0 AND 100),
+                minimum_confidence INTEGER NOT NULL DEFAULT 0 CHECK(minimum_confidence BETWEEN 0 AND 10),
+                telegram_enabled INTEGER NOT NULL DEFAULT 1 CHECK(telegram_enabled IN (0, 1)),
+                include_in_digest INTEGER NOT NULL DEFAULT 0 CHECK(include_in_digest IN (0, 1)),
+                dashboard_highlight INTEGER NOT NULL DEFAULT 1 CHECK(dashboard_highlight IN (0, 1)),
+                case_insensitive INTEGER NOT NULL DEFAULT 1 CHECK(case_insensitive IN (0, 1)),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS watchlist_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                watchlist_id INTEGER NOT NULL,
+                item_type TEXT NOT NULL CHECK(item_type IN ('token', 'narrative')),
+                item_value TEXT NOT NULL,
+                normalized_value TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (watchlist_id) REFERENCES watchlists(id),
+                UNIQUE (watchlist_id, item_type, normalized_value)
+            );
+
+            CREATE TABLE IF NOT EXISTS signal_watchlists (
+                signal_id INTEGER NOT NULL,
+                watchlist_id INTEGER NOT NULL,
+                matched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                matched_item_type TEXT NOT NULL CHECK(matched_item_type IN ('token', 'narrative')),
+                matched_item_value TEXT NOT NULL,
+                FOREIGN KEY (signal_id) REFERENCES signal_history(id),
+                FOREIGN KEY (watchlist_id) REFERENCES watchlists(id),
+                UNIQUE (signal_id, watchlist_id, matched_item_type, matched_item_value)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_signal_outcomes_signal_id
             ON signal_outcomes(signal_id);
 
@@ -147,6 +186,15 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_signal_rule_matches_rule
             ON signal_rule_matches(rule_id);
+
+            CREATE INDEX IF NOT EXISTS idx_watchlist_items_watchlist
+            ON watchlist_items(watchlist_id, item_type, normalized_value);
+
+            CREATE INDEX IF NOT EXISTS idx_signal_watchlists_watchlist
+            ON signal_watchlists(watchlist_id, matched_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_signal_watchlists_signal
+            ON signal_watchlists(signal_id);
             """
         )
         self._add_column_if_missing("signal_history", "mentions_count", "INTEGER")
@@ -219,6 +267,7 @@ class Database:
         )
 
     def reset(self) -> None:
+        self.connection.execute("DELETE FROM signal_watchlists")
         self.connection.execute("DELETE FROM signal_rule_matches")
         self.connection.execute("DELETE FROM signal_outcomes")
         self.connection.execute("DELETE FROM alerts")
@@ -789,6 +838,368 @@ class Database:
             (f"-{lookback_hours} hours", limit),
         ).fetchall()
 
+    def get_watchlist_digest_signals(
+        self,
+        lookback_hours: int = 24,
+        limit: int = 10,
+    ) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT DISTINCT signal.*
+            FROM signal_history AS signal
+            JOIN signal_watchlists AS association
+              ON association.signal_id = signal.id
+            JOIN watchlists AS watchlist ON watchlist.id = association.watchlist_id
+            WHERE watchlist.enabled = 1
+              AND watchlist.include_in_digest = 1
+              AND signal.timestamp >= datetime('now', ?)
+            ORDER BY signal.timestamp DESC, signal.id DESC
+            LIMIT ?
+            """,
+            (f"-{lookback_hours} hours", limit),
+        ).fetchall()
+
+    def create_watchlist(
+        self,
+        name: str,
+        description: str,
+        enabled: bool,
+        priority: int,
+        minimum_hype_score: float,
+        minimum_momentum_score: float,
+        minimum_confidence: int,
+        telegram_enabled: bool,
+        include_in_digest: bool,
+        dashboard_highlight: bool,
+        case_insensitive: bool,
+    ) -> int:
+        cursor = self.connection.execute(
+            """
+            INSERT INTO watchlists (
+                name, description, enabled, priority, minimum_hype_score,
+                minimum_momentum_score, minimum_confidence, telegram_enabled,
+                include_in_digest, dashboard_highlight, case_insensitive
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                description,
+                int(enabled),
+                priority,
+                minimum_hype_score,
+                minimum_momentum_score,
+                minimum_confidence,
+                int(telegram_enabled),
+                int(include_in_digest),
+                int(dashboard_highlight),
+                int(case_insensitive),
+            ),
+        )
+        self.connection.commit()
+        return int(cursor.lastrowid)
+
+    def get_watchlists(self, enabled: bool | None = None) -> list[sqlite3.Row]:
+        where = "WHERE enabled = ?" if enabled is not None else ""
+        parameters = (int(enabled),) if enabled is not None else ()
+        return self.connection.execute(
+            f"""
+            SELECT *
+            FROM watchlists
+            {where}
+            ORDER BY priority DESC, name COLLATE NOCASE, id
+            """,
+            parameters,
+        ).fetchall()
+
+    def get_watchlist(self, identifier: int | str) -> sqlite3.Row | None:
+        if isinstance(identifier, int):
+            return self.connection.execute(
+                "SELECT * FROM watchlists WHERE id = ?",
+                (identifier,),
+            ).fetchone()
+        return self.connection.execute(
+            "SELECT * FROM watchlists WHERE name = ? COLLATE NOCASE",
+            (str(identifier).strip(),),
+        ).fetchone()
+
+    def update_watchlist(self, watchlist_id: int, **changes) -> bool:
+        allowed = {
+            "name",
+            "description",
+            "enabled",
+            "priority",
+            "minimum_hype_score",
+            "minimum_momentum_score",
+            "minimum_confidence",
+            "telegram_enabled",
+            "include_in_digest",
+            "dashboard_highlight",
+            "case_insensitive",
+        }
+        assignments = []
+        parameters: list[object] = []
+        for key, value in changes.items():
+            if key not in allowed:
+                raise ValueError(f"Unsupported watchlist column: {key}")
+            if key in {
+                "enabled",
+                "telegram_enabled",
+                "include_in_digest",
+                "dashboard_highlight",
+                "case_insensitive",
+            }:
+                value = int(bool(value))
+            assignments.append(f"{key} = ?")
+            parameters.append(value)
+        if not assignments:
+            return self.get_watchlist(watchlist_id) is not None
+        assignments.append("updated_at = CURRENT_TIMESTAMP")
+        parameters.append(watchlist_id)
+        cursor = self.connection.execute(
+            f"UPDATE watchlists SET {', '.join(assignments)} WHERE id = ?",
+            parameters,
+        )
+        self.connection.commit()
+        return bool(cursor.rowcount)
+
+    def delete_watchlist(self, watchlist_id: int) -> bool:
+        self.connection.execute(
+            "DELETE FROM signal_watchlists WHERE watchlist_id = ?",
+            (watchlist_id,),
+        )
+        self.connection.execute(
+            "DELETE FROM watchlist_items WHERE watchlist_id = ?",
+            (watchlist_id,),
+        )
+        cursor = self.connection.execute(
+            "DELETE FROM watchlists WHERE id = ?",
+            (watchlist_id,),
+        )
+        self.connection.commit()
+        return bool(cursor.rowcount)
+
+    def add_watchlist_item(
+        self,
+        watchlist_id: int,
+        item_type: str,
+        item_value: str,
+        normalized_value: str,
+    ) -> int:
+        cursor = self.connection.execute(
+            """
+            INSERT INTO watchlist_items (
+                watchlist_id, item_type, item_value, normalized_value
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (watchlist_id, item_type, item_value, normalized_value),
+        )
+        self.connection.commit()
+        return int(cursor.lastrowid)
+
+    def get_watchlist_item(self, item_id: int) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM watchlist_items WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+
+    def get_watchlist_items(self, watchlist_id: int) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT *
+            FROM watchlist_items
+            WHERE watchlist_id = ?
+            ORDER BY item_type, item_value COLLATE NOCASE, id
+            """,
+            (watchlist_id,),
+        ).fetchall()
+
+    def get_watchlist_items_for_enabled_watchlists(self) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT item.*
+            FROM watchlist_items AS item
+            JOIN watchlists AS watchlist ON watchlist.id = item.watchlist_id
+            WHERE watchlist.enabled = 1
+            ORDER BY watchlist.priority DESC, item.id
+            """
+        ).fetchall()
+
+    def remove_watchlist_item(self, watchlist_id: int, item: int | str) -> bool:
+        if isinstance(item, int):
+            cursor = self.connection.execute(
+                "DELETE FROM watchlist_items WHERE watchlist_id = ? AND id = ?",
+                (watchlist_id, item),
+            )
+        else:
+            normalized = " ".join(str(item).strip().split()).lstrip("$").casefold()
+            cursor = self.connection.execute(
+                """
+                DELETE FROM watchlist_items
+                WHERE watchlist_id = ? AND normalized_value = ?
+                """,
+                (watchlist_id, normalized),
+            )
+        self.connection.commit()
+        return bool(cursor.rowcount)
+
+    def save_signal_watchlist(
+        self,
+        signal_id: int,
+        watchlist_id: int,
+        matched_item_type: str,
+        matched_item_value: str,
+    ) -> bool:
+        cursor = self.connection.execute(
+            """
+            INSERT OR IGNORE INTO signal_watchlists (
+                signal_id, watchlist_id, matched_item_type, matched_item_value
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (signal_id, watchlist_id, matched_item_type, matched_item_value),
+        )
+        self.connection.commit()
+        return bool(cursor.rowcount)
+
+    def get_signal_watchlists(
+        self,
+        signal_id: int,
+        telegram_only: bool = False,
+    ) -> list[sqlite3.Row]:
+        telegram_filter = "AND watchlist.telegram_enabled = 1" if telegram_only else ""
+        return self.connection.execute(
+            f"""
+            SELECT
+                watchlist.*,
+                GROUP_CONCAT(DISTINCT association.matched_item_type)
+                    AS matched_item_types,
+                GROUP_CONCAT(DISTINCT association.matched_item_value)
+                    AS matched_item_values,
+                MAX(association.matched_at) AS matched_at
+            FROM signal_watchlists AS association
+            JOIN watchlists AS watchlist ON watchlist.id = association.watchlist_id
+            WHERE association.signal_id = ?
+            {telegram_filter}
+            GROUP BY watchlist.id
+            ORDER BY watchlist.priority DESC, watchlist.name COLLATE NOCASE
+            """,
+            (signal_id,),
+        ).fetchall()
+
+    def get_signal_watchlist_context(self, signal_id: int) -> dict[str, object]:
+        rows = self.get_signal_watchlists(signal_id)
+        return {
+            "ids": tuple(int(row["id"]) for row in rows),
+            "names": tuple(str(row["name"]) for row in rows),
+            "highest_priority": max((int(row["priority"]) for row in rows), default=0),
+            "matched_any": bool(rows),
+        }
+
+    def get_watchlist_signals(
+        self,
+        watchlist_id: int,
+        limit: int | None = 50,
+        days: int | None = None,
+    ) -> list[sqlite3.Row]:
+        conditions = ["association.watchlist_id = ?"]
+        parameters: list[object] = [watchlist_id]
+        if days is not None:
+            conditions.append("signal.timestamp >= datetime('now', ?)")
+            parameters.append(f"-{days} days")
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = "LIMIT ?"
+            parameters.append(limit)
+        return self.connection.execute(
+            f"""
+            WITH matched AS (
+                SELECT
+                    signal_id,
+                    MAX(matched_at) AS matched_at,
+                    GROUP_CONCAT(DISTINCT matched_item_type) AS matched_item_types,
+                    GROUP_CONCAT(DISTINCT matched_item_value) AS matched_item_values
+                FROM signal_watchlists AS association
+                WHERE association.watchlist_id = ?
+                GROUP BY signal_id
+            )
+            SELECT
+                signal.*,
+                matched.matched_at,
+                matched.matched_item_types,
+                matched.matched_item_values,
+                outcome.status AS outcome_status,
+                outcome.evaluated_at
+            FROM matched
+            JOIN signal_history AS signal ON signal.id = matched.signal_id
+            LEFT JOIN signal_outcomes AS outcome
+              ON outcome.id = (
+                  SELECT latest.id FROM signal_outcomes AS latest
+                  WHERE latest.signal_id = signal.id
+                  ORDER BY latest.evaluated_at DESC, latest.id DESC LIMIT 1
+              )
+            WHERE {' AND '.join(conditions[1:]) if len(conditions) > 1 else '1 = 1'}
+            ORDER BY signal.timestamp DESC, signal.id DESC
+            {limit_clause}
+            """,
+            [watchlist_id, *parameters[1:]],
+        ).fetchall()
+
+    def get_watchlist_performance(self, watchlist_id: int, days: int = 30) -> sqlite3.Row:
+        return self.connection.execute(
+            """
+            WITH matched AS (
+                SELECT DISTINCT association.signal_id,
+                    MAX(association.matched_at) AS matched_at
+                FROM signal_watchlists AS association
+                JOIN signal_history AS signal ON signal.id = association.signal_id
+                WHERE association.watchlist_id = ?
+                  AND signal.timestamp >= datetime('now', ?)
+                GROUP BY association.signal_id
+            ), latest_outcomes AS (
+                SELECT outcome.*
+                FROM signal_outcomes AS outcome
+                WHERE outcome.id = (
+                    SELECT latest.id FROM signal_outcomes AS latest
+                    WHERE latest.signal_id = outcome.signal_id
+                    ORDER BY latest.evaluated_at DESC, latest.id DESC LIMIT 1
+                )
+            )
+            SELECT
+                COUNT(matched.signal_id) AS signals_count,
+                COUNT(outcome.id) AS evaluated_count,
+                SUM(CASE WHEN outcome.status = 'SUCCESS' THEN 1 ELSE 0 END)
+                    AS successful_count,
+                SUM(CASE WHEN outcome.status = 'NEUTRAL' THEN 1 ELSE 0 END)
+                    AS neutral_count,
+                SUM(CASE WHEN outcome.status = 'FAILED' THEN 1 ELSE 0 END)
+                    AS failed_count,
+                AVG(signal.hype_score) AS average_hype_score,
+                AVG(signal.momentum_score) AS average_momentum_score,
+                MAX(matched.matched_at) AS last_matched_at
+            FROM matched
+            JOIN signal_history AS signal ON signal.id = matched.signal_id
+            LEFT JOIN latest_outcomes AS outcome ON outcome.signal_id = signal.id
+            """,
+            (watchlist_id, f"-{days} days"),
+        ).fetchone()
+
+    def get_rules_referencing_watchlist(
+        self,
+        watchlist_id: int,
+        watchlist_name: str,
+    ) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT * FROM alert_rules
+            WHERE condition LIKE ? COLLATE NOCASE
+               OR condition LIKE ?
+            ORDER BY priority DESC, name COLLATE NOCASE
+            """,
+            (f"%{watchlist_name}%", f"%{watchlist_id}%"),
+        ).fetchall()
+
     def get_pending_signal_outcomes(
         self,
         evaluation_window_hours: int,
@@ -1033,6 +1444,7 @@ class Database:
         signal_id: int | None = None,
         from_date: str | None = None,
         to_date: str | None = None,
+        watchlist_id: int | None = None,
     ) -> list[sqlite3.Row]:
         if not self.has_table("signal_outcomes") or not self.has_table("signal_history"):
             return []
@@ -1053,6 +1465,13 @@ class Database:
         if period_hours is not None:
             conditions.append("outcome.evaluated_at >= datetime('now', ?)")
             parameters.append(f"-{period_hours} hours")
+        if watchlist_id is not None:
+            conditions.append(
+                "EXISTS (SELECT 1 FROM signal_watchlists AS association "
+                "WHERE association.signal_id = signal.id "
+                "AND association.watchlist_id = ?)"
+            )
+            parameters.append(watchlist_id)
         self._append_date_filters(
             conditions,
             parameters,
@@ -1214,6 +1633,7 @@ class Database:
         limit: int | None = 50,
         from_date: str | None = None,
         to_date: str | None = None,
+        watchlist_id: int | None = None,
     ) -> list[sqlite3.Row]:
         if not self.has_table("signal_history"):
             return []
@@ -1265,6 +1685,25 @@ class Database:
             if self.has_table("signal_outcomes")
             else ""
         )
+        watchlist_columns = (
+            "(SELECT GROUP_CONCAT(DISTINCT watchlist.name) "
+            "FROM signal_watchlists AS association "
+            "JOIN watchlists AS watchlist ON watchlist.id = association.watchlist_id "
+            "WHERE association.signal_id = signal.id) AS watchlist_names, "
+            "EXISTS (SELECT 1 FROM signal_watchlists AS association "
+            "JOIN watchlists AS watchlist ON watchlist.id = association.watchlist_id "
+            "WHERE association.signal_id = signal.id "
+            "AND watchlist.dashboard_highlight = 1) AS watchlist_dashboard_highlight, "
+            "EXISTS (SELECT 1 FROM signal_watchlists AS association "
+            "JOIN watchlists AS watchlist ON watchlist.id = association.watchlist_id "
+            "WHERE association.signal_id = signal.id "
+            "AND watchlist.include_in_digest = 1) AS watchlist_include_in_digest"
+            if self.has_table("signal_watchlists") and self.has_table("watchlists")
+            else (
+                "NULL AS watchlist_names, 0 AS watchlist_dashboard_highlight, "
+                "0 AS watchlist_include_in_digest"
+            )
+        )
         conditions: list[str] = []
         parameters: list[object] = []
         self._append_date_filters(
@@ -1274,6 +1713,13 @@ class Database:
             from_date,
             to_date,
         )
+        if watchlist_id is not None:
+            conditions.append(
+                "EXISTS (SELECT 1 FROM signal_watchlists AS association "
+                "WHERE association.signal_id = signal.id "
+                "AND association.watchlist_id = ?)"
+            )
+            parameters.append(watchlist_id)
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         limit_clause = ""
         if limit is not None:
@@ -1284,7 +1730,8 @@ class Database:
             SELECT
                 signal.*,
                 {outcome_columns},
-                {rule_columns}
+                {rule_columns},
+                {watchlist_columns}
             FROM signal_history AS signal
             {outcome_join}
             {where_clause}
