@@ -153,6 +153,8 @@ class TelegramAlerter:
         alert: HypeAlert,
         watchlist_names: tuple[str, ...] = (),
         ai_analysis: SignalAnalysisResult | None = None,
+        unified_event=None,
+        unified_items=(),
     ) -> None:
         response = requests.post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
@@ -162,6 +164,8 @@ class TelegramAlerter:
                     alert,
                     watchlist_names,
                     ai_analysis,
+                    unified_event,
+                    unified_items,
                 ),
                 "parse_mode": "HTML",
             },
@@ -195,6 +199,45 @@ class TelegramAlerter:
                 "text": text,
                 "parse_mode": "HTML",
             },
+            timeout=30,
+        )
+        response.raise_for_status()
+
+    def send_unified_event_update(self, event, items, reason: str) -> None:
+        sources = ", ".join(str(item["source_name"]) for item in items[:6]) or "Unknown"
+        conflicts = ""
+        if int(event["conflict_count"] or 0):
+            conflicts = (
+                f"\n<b>Conflicts:</b> {int(event['conflict_count'])} "
+                "(review recommended)"
+            )
+        text = (
+            "<b>Crypto Event Update</b>\n"
+            f"<b>Event:</b> {_safe_html(event['title'], 180)}\n"
+            f"<b>Why:</b> {_safe_html(reason, 180)}\n"
+            f"<b>Sources:</b> {_safe_html(sources, 300)}\n"
+            f"<b>Coverage:</b> {int(event['source_count'])} sources, "
+            f"{int(event['item_count'])} items\n"
+            f"<b>Hype:</b> {normalize_hype_score(float(event['hype_score']))}/100\n"
+            f"<b>Momentum:</b> {float(event['momentum_score']):.1f}/100"
+            f"{conflicts}"
+        )
+        self._send_html(text)
+
+    def send_source_health_alert(
+        self, source_key: str, message: str, recovered: bool = False,
+    ) -> None:
+        heading = "Source Recovered" if recovered else "Source Fetch Warning"
+        self._send_html(
+            f"<b>{heading}</b>\n\n"
+            f"<b>Source:</b> {_safe_html(source_key, 100)}\n"
+            f"<b>Status:</b> {_safe_html(message, 240)}"
+        )
+
+    def _send_html(self, text: str) -> None:
+        response = requests.post(
+            f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
+            json={"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"},
             timeout=30,
         )
         response.raise_for_status()
@@ -375,6 +418,8 @@ def format_telegram_hype_alert(
     alert: HypeAlert,
     watchlist_names: tuple[str, ...] = (),
     ai_analysis: SignalAnalysisResult | None = None,
+    unified_event=None,
+    unified_items=(),
 ) -> str:
     posts = "\n".join(
         f"{index}. @{_safe_html(post.username, 50)}: {_safe_html(post.text, 180)}"
@@ -396,6 +441,19 @@ def format_telegram_hype_alert(
         if watchlist_names
         else ""
     )
+    unified_context = ""
+    if unified_event is not None:
+        source_names = ", ".join(
+            _safe_html(item["source_name"], 60) for item in unified_items[:6]
+        ) or "Unknown"
+        review = "yes" if bool(unified_event["requires_review"]) else "no"
+        unified_context = (
+            "\n\n<b>Unified event:</b> "
+            f"{int(unified_event['source_count'])} sources / "
+            f"{int(unified_event['item_count'])} items\n"
+            f"<b>Coverage:</b> {source_names}\n"
+            f"<b>Requires review:</b> {review}"
+        )
     message = (
         "🚨 <b>Crypto Hype Spike</b>\n"
         f"<b>Signal:</b> {_safe_html(_alert_title(alert), 120)}\n\n"
@@ -412,6 +470,7 @@ def format_telegram_hype_alert(
         f"<b>Narratives:</b> {narratives}"
         f"\n\n<b>Narrative Momentum:</b>\n{momentum or 'None'}"
         f"{_format_ai_analysis(ai_analysis)}"
+        f"{unified_context}"
     )
     return message
 
@@ -483,6 +542,8 @@ def format_telegram_watchlist_report(report) -> str:
         f"Priority: {report.watchlist.priority}\n"
         f"Items: {len(report.items)}\n"
         f"Recent signals: {report.signals_count}\n"
+        f"Unified events: {report.unified_event_count}\n"
+        f"Raw articles: {report.raw_article_count}\n"
         f"Evaluated: {report.evaluated_count}\n"
         f"Success rate: {rate}\n\n"
         f"<b>Latest matches</b>\n{latest}"

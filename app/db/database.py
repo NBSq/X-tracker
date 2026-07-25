@@ -217,6 +217,125 @@ class Database:
                 UNIQUE (signal_id, provider, model, prompt_version)
             );
 
+            CREATE TABLE IF NOT EXISTS content_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_key TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                name TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                url TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+                priority INTEGER NOT NULL DEFAULT 5,
+                categories_json TEXT NOT NULL DEFAULT '[]',
+                fetch_interval_seconds INTEGER NOT NULL DEFAULT 300,
+                last_fetch_at TEXT,
+                last_success_at TEXT,
+                last_error_at TEXT,
+                last_error_type TEXT,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                successful_fetches INTEGER NOT NULL DEFAULT 0,
+                failed_fetches INTEGER NOT NULL DEFAULT 0,
+                empty_fetches INTEGER NOT NULL DEFAULT 0,
+                total_fetch_latency_ms INTEGER NOT NULL DEFAULT 0,
+                total_items_fetched INTEGER NOT NULL DEFAULT 0,
+                total_items_accepted INTEGER NOT NULL DEFAULT 0,
+                total_items_deduplicated INTEGER NOT NULL DEFAULT 0,
+                last_failure_alert_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS content_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL,
+                external_id TEXT NOT NULL,
+                canonical_url TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                author TEXT NOT NULL DEFAULT '',
+                published_at TEXT,
+                fetched_at TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                normalized_title TEXT NOT NULL,
+                language TEXT NOT NULL DEFAULT 'unknown',
+                tokens_json TEXT NOT NULL DEFAULT '[]',
+                narratives_json TEXT NOT NULL DEFAULT '[]',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'accepted',
+                duplicate_reason TEXT,
+                duplicate_of_content_item_id INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (source_id) REFERENCES content_sources(id),
+                FOREIGN KEY (duplicate_of_content_item_id) REFERENCES content_items(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS unified_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_key TEXT NOT NULL UNIQUE,
+                primary_content_item_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
+                token TEXT,
+                narrative TEXT,
+                tokens_json TEXT NOT NULL DEFAULT '[]',
+                narratives_json TEXT NOT NULL DEFAULT '[]',
+                detected_conflicts_json TEXT NOT NULL DEFAULT '[]',
+                conflict_count INTEGER NOT NULL DEFAULT 0,
+                requires_review INTEGER NOT NULL DEFAULT 0,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                source_count INTEGER NOT NULL DEFAULT 1,
+                item_count INTEGER NOT NULL DEFAULT 1,
+                duplicate_count INTEGER NOT NULL DEFAULT 0,
+                highest_source_priority INTEGER NOT NULL DEFAULT 0,
+                hype_score REAL NOT NULL DEFAULT 0,
+                momentum_score REAL NOT NULL DEFAULT 0,
+                confidence REAL NOT NULL DEFAULT 0,
+                material_version INTEGER NOT NULL DEFAULT 1,
+                last_material_update_at TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (primary_content_item_id) REFERENCES content_items(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS unified_event_items (
+                unified_event_id INTEGER NOT NULL,
+                content_item_id INTEGER NOT NULL,
+                similarity_score REAL NOT NULL DEFAULT 1.0,
+                match_reason TEXT NOT NULL,
+                added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (unified_event_id) REFERENCES unified_events(id),
+                FOREIGN KEY (content_item_id) REFERENCES content_items(id),
+                UNIQUE (unified_event_id, content_item_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS unified_event_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                unified_event_id INTEGER NOT NULL,
+                changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                change_type TEXT NOT NULL,
+                source_count INTEGER NOT NULL,
+                item_count INTEGER NOT NULL,
+                hype_score REAL NOT NULL DEFAULT 0,
+                momentum_score REAL NOT NULL DEFAULT 0,
+                details_json TEXT NOT NULL DEFAULT '{}',
+                FOREIGN KEY (unified_event_id) REFERENCES unified_events(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS source_fetch_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL,
+                fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                success INTEGER NOT NULL CHECK(success IN (0, 1)),
+                empty INTEGER NOT NULL DEFAULT 0 CHECK(empty IN (0, 1)),
+                item_count INTEGER NOT NULL DEFAULT 0,
+                accepted_count INTEGER NOT NULL DEFAULT 0,
+                duplicate_count INTEGER NOT NULL DEFAULT 0,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                error_type TEXT,
+                FOREIGN KEY (source_id) REFERENCES content_sources(id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_signal_outcomes_signal_id
             ON signal_outcomes(signal_id);
 
@@ -255,9 +374,33 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_signal_ai_analyses_signal
             ON signal_ai_analyses(signal_id, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_content_items_external_id
+            ON content_items(source_id, external_id);
+
+            CREATE INDEX IF NOT EXISTS idx_content_items_canonical_url
+            ON content_items(canonical_url);
+
+            CREATE INDEX IF NOT EXISTS idx_content_items_hash
+            ON content_items(content_hash);
+
+            CREATE INDEX IF NOT EXISTS idx_content_items_title_time
+            ON content_items(normalized_title, published_at);
+
+            CREATE INDEX IF NOT EXISTS idx_unified_event_items_content
+            ON unified_event_items(content_item_id);
+
+            CREATE INDEX IF NOT EXISTS idx_unified_events_last_seen
+            ON unified_events(last_seen_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_source_fetch_history_source
+            ON source_fetch_history(source_id, fetched_at DESC);
             """
         )
         self._add_column_if_missing("signal_history", "mentions_count", "INTEGER")
+        self._add_column_if_missing("signal_history", "unified_event_id", "INTEGER")
+        self._add_column_if_missing("analyzed_posts", "content_item_id", "INTEGER")
+        self._add_column_if_missing("analyzed_posts", "unified_event_id", "INTEGER")
         self._migrate_signal_outcomes()
         self.connection.commit()
 
@@ -327,6 +470,23 @@ class Database:
         )
 
     def reset(self) -> None:
+        self.connection.execute("DELETE FROM unified_event_history")
+        self.connection.execute("DELETE FROM unified_event_items")
+        self.connection.execute("DELETE FROM unified_events")
+        self.connection.execute("DELETE FROM source_fetch_history")
+        self.connection.execute("DELETE FROM content_items")
+        self.connection.execute(
+            """
+            UPDATE content_sources SET
+                last_fetch_at = NULL, last_success_at = NULL,
+                last_error_at = NULL, last_error_type = NULL,
+                consecutive_failures = 0, successful_fetches = 0,
+                failed_fetches = 0, empty_fetches = 0,
+                total_fetch_latency_ms = 0, total_items_fetched = 0,
+                total_items_accepted = 0, total_items_deduplicated = 0,
+                last_failure_alert_at = NULL
+            """
+        )
         self.connection.execute("DELETE FROM signal_ai_analyses")
         self.connection.execute("DELETE FROM ai_usage")
         self.connection.execute("DELETE FROM ai_analysis_cache")
@@ -554,6 +714,609 @@ class Database:
             ORDER BY analysis.created_at DESC, analysis.id DESC LIMIT ?
             """,
             parameters,
+        ).fetchall()
+
+    def upsert_content_source(self, definition) -> int:
+        self.connection.execute(
+            """
+            INSERT INTO content_sources (
+                source_key, name, source_type, url, enabled, priority,
+                categories_json, fetch_interval_seconds
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_key) DO UPDATE SET
+                name = excluded.name,
+                source_type = excluded.source_type,
+                url = excluded.url,
+                enabled = excluded.enabled,
+                priority = excluded.priority,
+                categories_json = excluded.categories_json,
+                fetch_interval_seconds = excluded.fetch_interval_seconds,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                definition.source_key,
+                definition.name,
+                definition.source_type,
+                definition.url,
+                int(definition.enabled),
+                definition.priority,
+                json.dumps(definition.categories, ensure_ascii=False),
+                definition.fetch_interval_seconds,
+            ),
+        )
+        self.connection.commit()
+        row = self.get_content_source(definition.source_key)
+        if row is None:
+            raise RuntimeError("Content source could not be persisted")
+        return int(row["id"])
+
+    def get_content_sources(self, enabled: bool | None = None) -> list[sqlite3.Row]:
+        where = "WHERE enabled = ?" if enabled is not None else ""
+        parameters = (int(enabled),) if enabled is not None else ()
+        return self.connection.execute(
+            f"""
+            SELECT *, CASE WHEN successful_fetches + failed_fetches > 0
+                THEN 100.0 * successful_fetches / (successful_fetches + failed_fetches)
+                ELSE 0.0 END AS success_rate,
+                CASE WHEN successful_fetches + failed_fetches > 0
+                THEN 1.0 * total_fetch_latency_ms / (successful_fetches + failed_fetches)
+                ELSE 0.0 END AS average_latency_ms
+            FROM content_sources {where}
+            ORDER BY priority DESC, name COLLATE NOCASE
+            """,
+            parameters,
+        ).fetchall()
+
+    def get_content_source(self, identifier: int | str) -> sqlite3.Row | None:
+        if isinstance(identifier, int):
+            return self.connection.execute(
+                "SELECT * FROM content_sources WHERE id = ?", (identifier,)
+            ).fetchone()
+        return self.connection.execute(
+            "SELECT * FROM content_sources WHERE source_key = ? COLLATE NOCASE",
+            (str(identifier),),
+        ).fetchone()
+
+    def update_content_source(self, identifier: int | str, **changes) -> bool:
+        source = self.get_content_source(identifier)
+        if source is None:
+            return False
+        allowed = {
+            "name", "source_type", "url", "enabled", "priority",
+            "categories_json", "fetch_interval_seconds",
+        }
+        assignments = []
+        parameters: list[object] = []
+        for key, value in changes.items():
+            if key not in allowed:
+                raise ValueError(f"Unsupported source field: {key}")
+            if key == "enabled":
+                value = int(bool(value))
+            assignments.append(f"{key} = ?")
+            parameters.append(value)
+        if not assignments:
+            return True
+        assignments.append("updated_at = CURRENT_TIMESTAMP")
+        parameters.append(int(source["id"]))
+        cursor = self.connection.execute(
+            f"UPDATE content_sources SET {', '.join(assignments)} WHERE id = ?",
+            parameters,
+        )
+        self.connection.commit()
+        return bool(cursor.rowcount)
+
+    def delete_content_source(self, identifier: int | str) -> bool:
+        source = self.get_content_source(identifier)
+        if source is None:
+            return False
+        count = self.connection.execute(
+            "SELECT COUNT(*) FROM content_items WHERE source_id = ?",
+            (source["id"],),
+        ).fetchone()[0]
+        if count:
+            return False
+        cursor = self.connection.execute(
+            "DELETE FROM content_sources WHERE id = ?", (source["id"],)
+        )
+        self.connection.commit()
+        return bool(cursor.rowcount)
+
+    def record_source_fetch(
+        self,
+        source_id: int,
+        *,
+        success: bool,
+        item_count: int,
+        accepted_count: int,
+        duplicate_count: int,
+        duration_ms: int,
+        error_type: str | None = None,
+    ) -> bool:
+        source = self.get_content_source(source_id)
+        was_failing = bool(source and int(source["consecutive_failures"] or 0) > 0)
+        empty = success and item_count == 0
+        self.connection.execute(
+            """
+            INSERT INTO source_fetch_history (
+                source_id, success, empty, item_count, accepted_count,
+                duplicate_count, duration_ms, error_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                source_id, int(success), int(empty), item_count, accepted_count,
+                duplicate_count, duration_ms, error_type,
+            ),
+        )
+        if success:
+            self.connection.execute(
+                """
+                UPDATE content_sources SET
+                    last_fetch_at = CURRENT_TIMESTAMP,
+                    last_success_at = CURRENT_TIMESTAMP,
+                    last_error_type = NULL,
+                    last_failure_alert_at = NULL,
+                    consecutive_failures = 0,
+                    successful_fetches = successful_fetches + 1,
+                    empty_fetches = empty_fetches + ?,
+                    total_fetch_latency_ms = total_fetch_latency_ms + ?,
+                    total_items_fetched = total_items_fetched + ?,
+                    total_items_accepted = total_items_accepted + ?,
+                    total_items_deduplicated = total_items_deduplicated + ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    int(empty), duration_ms, item_count, accepted_count,
+                    duplicate_count, source_id,
+                ),
+            )
+        else:
+            self.connection.execute(
+                """
+                UPDATE content_sources SET
+                    last_fetch_at = CURRENT_TIMESTAMP,
+                    last_error_at = CURRENT_TIMESTAMP,
+                    last_error_type = ?,
+                    consecutive_failures = consecutive_failures + 1,
+                    failed_fetches = failed_fetches + 1,
+                    total_fetch_latency_ms = total_fetch_latency_ms + ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (error_type, duration_ms, source_id),
+            )
+        self.connection.commit()
+        return was_failing and success
+
+    def mark_source_failure_alert(self, source_id: int) -> None:
+        self.connection.execute(
+            """
+            UPDATE content_sources
+            SET last_failure_alert_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (source_id,),
+        )
+        self.connection.commit()
+
+    def save_content_item(
+        self,
+        source_id: int,
+        item,
+        *,
+        status: str,
+        duplicate_reason: str | None = None,
+        duplicate_of_content_item_id: int | None = None,
+    ) -> int:
+        cursor = self.connection.execute(
+            """
+            INSERT INTO content_items (
+                source_id, external_id, canonical_url, title, body, author,
+                published_at, fetched_at, content_hash, normalized_title,
+                language, tokens_json, narratives_json, metadata_json, status,
+                duplicate_reason, duplicate_of_content_item_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                source_id, item.external_id, item.canonical_url, item.title,
+                item.body, item.author, item.published_at, item.fetched_at,
+                item.content_hash, item.normalized_title, item.language,
+                json.dumps(item.tokens, ensure_ascii=False),
+                json.dumps(item.narratives, ensure_ascii=False),
+                json.dumps(item.metadata, ensure_ascii=False), status,
+                duplicate_reason, duplicate_of_content_item_id,
+            ),
+        )
+        self.connection.commit()
+        return int(cursor.lastrowid)
+
+    def get_content_item(self, item_id: int) -> sqlite3.Row | None:
+        return self.connection.execute(
+            """
+            SELECT item.*, source.source_key, source.name AS source_name,
+                   source.source_type, source.priority AS source_priority
+            FROM content_items AS item
+            JOIN content_sources AS source ON source.id = item.source_id
+            WHERE item.id = ?
+            """,
+            (item_id,),
+        ).fetchone()
+
+    def get_content_items(
+        self,
+        limit: int | None = 100,
+        source_id: int | None = None,
+        status: str | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> list[sqlite3.Row]:
+        conditions = []
+        parameters: list[object] = []
+        if source_id is not None:
+            conditions.append("item.source_id = ?")
+            parameters.append(source_id)
+        if status is not None:
+            conditions.append("item.status = ?")
+            parameters.append(status)
+        self._append_date_filters(conditions, parameters, "item.fetched_at", from_date, to_date)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = "LIMIT ?"
+            parameters.append(limit)
+        return self.connection.execute(
+            f"""
+            SELECT item.*, source.source_key, source.name AS source_name,
+                   source.source_type, source.priority AS source_priority,
+                   association.unified_event_id
+            FROM content_items AS item
+            JOIN content_sources AS source ON source.id = item.source_id
+            LEFT JOIN unified_event_items AS association
+              ON association.content_item_id = item.id
+            {where}
+            ORDER BY item.fetched_at DESC, item.id DESC {limit_clause}
+            """,
+            parameters,
+        ).fetchall()
+
+    def find_exact_content_duplicate(self, source_id: int, item) -> tuple[sqlite3.Row | None, str | None]:
+        checks = [
+            ("source_id = ? AND external_id = ?", (source_id, item.external_id), "same_external_id"),
+            ("canonical_url = ? AND canonical_url != ''", (item.canonical_url,), "same_canonical_url"),
+            ("content_hash = ?", (item.content_hash,), "same_content_hash"),
+        ]
+        if item.normalized_title:
+            checks.append(
+                (
+                    "normalized_title = ? AND fetched_at >= datetime(?, '-24 hours')",
+                    (item.normalized_title, item.fetched_at),
+                    "same_normalized_title",
+                )
+            )
+        for where, parameters, reason in checks:
+            row = self.connection.execute(
+                f"SELECT * FROM content_items WHERE {where} ORDER BY id LIMIT 1",
+                parameters,
+            ).fetchone()
+            if row is not None:
+                return row, reason
+        return None, None
+
+    def get_near_duplicate_candidates(self, fetched_at: str, hours: int) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT item.*, source.source_key, source.priority AS source_priority,
+                   association.unified_event_id
+            FROM content_items AS item
+            JOIN content_sources AS source ON source.id = item.source_id
+            LEFT JOIN unified_event_items AS association
+              ON association.content_item_id = item.id
+            WHERE item.fetched_at >= datetime(?, ?)
+            ORDER BY item.id DESC
+            LIMIT 500
+            """,
+            (fetched_at, f"-{hours} hours"),
+        ).fetchall()
+
+    def create_unified_event(self, content_item_id: int, event_key: str) -> int:
+        item = self.get_content_item(content_item_id)
+        if item is None:
+            raise ValueError("Content item does not exist")
+        seen_at = item["published_at"] or item["fetched_at"]
+        cursor = self.connection.execute(
+            """
+            INSERT INTO unified_events (
+                event_key, primary_content_item_id, title, summary,
+                tokens_json, narratives_json, first_seen_at, last_seen_at,
+                highest_source_priority
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_key, content_item_id, item["title"], item["body"][:500],
+                item["tokens_json"], item["narratives_json"], seen_at, seen_at,
+                item["source_priority"],
+            ),
+        )
+        event_id = int(cursor.lastrowid)
+        self.connection.execute(
+            """
+            INSERT INTO unified_event_items (
+                unified_event_id, content_item_id, similarity_score, match_reason
+            ) VALUES (?, ?, 1.0, 'primary')
+            """,
+            (event_id, content_item_id),
+        )
+        self.connection.execute(
+            """
+            INSERT INTO unified_event_history (
+                unified_event_id, change_type, source_count, item_count, details_json
+            ) VALUES (?, 'created', 1, 1, '{}')
+            """,
+            (event_id,),
+        )
+        self.connection.commit()
+        return event_id
+
+    def add_unified_event_item(
+        self,
+        event_id: int,
+        content_item_id: int,
+        similarity_score: float,
+        match_reason: str,
+    ) -> bool:
+        cursor = self.connection.execute(
+            """
+            INSERT OR IGNORE INTO unified_event_items (
+                unified_event_id, content_item_id, similarity_score, match_reason
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (event_id, content_item_id, similarity_score, match_reason),
+        )
+        self.connection.commit()
+        return bool(cursor.rowcount)
+
+    def get_unified_event(self, event_id: int) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM unified_events WHERE id = ?", (event_id,)
+        ).fetchone()
+
+    def get_unified_events(
+        self,
+        limit: int | None = 100,
+        status: str | None = None,
+    ) -> list[sqlite3.Row]:
+        where = "WHERE status = ?" if status else ""
+        parameters: list[object] = [status] if status else []
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = "LIMIT ?"
+            parameters.append(limit)
+        return self.connection.execute(
+            f"""
+            SELECT event.*, source.name AS primary_source_name,
+                   item.canonical_url AS primary_url,
+                   item.author AS primary_author
+            FROM unified_events AS event
+            JOIN content_items AS item ON item.id = event.primary_content_item_id
+            JOIN content_sources AS source ON source.id = item.source_id
+            {where}
+            ORDER BY event.last_seen_at DESC, event.id DESC {limit_clause}
+            """,
+            parameters,
+        ).fetchall()
+
+    def get_unified_event_items(self, event_id: int) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT item.*, source.source_key, source.name AS source_name,
+                   source.priority AS source_priority,
+                   association.similarity_score, association.match_reason,
+                   association.added_at
+            FROM unified_event_items AS association
+            JOIN content_items AS item ON item.id = association.content_item_id
+            JOIN content_sources AS source ON source.id = item.source_id
+            WHERE association.unified_event_id = ?
+            ORDER BY source.priority DESC, item.published_at, item.id
+            """,
+            (event_id,),
+        ).fetchall()
+
+    def get_unified_event_for_content(self, content_item_id: int) -> int | None:
+        row = self.connection.execute(
+            "SELECT unified_event_id FROM unified_event_items WHERE content_item_id = ?",
+            (content_item_id,),
+        ).fetchone()
+        return int(row[0]) if row else None
+
+    def find_unified_event_for_signal(
+        self,
+        token: str | None,
+        narrative: str | None,
+    ) -> sqlite3.Row | None:
+        clauses = []
+        parameters: list[object] = []
+        if token:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM json_each(ue.tokens_json) "
+                "WHERE value = ? COLLATE NOCASE)"
+            )
+            parameters.append(token)
+        if narrative:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM json_each(ue.narratives_json) "
+                "WHERE value = ? COLLATE NOCASE)"
+            )
+            parameters.append(narrative)
+        if not clauses:
+            return None
+        return self.connection.execute(
+            f"""
+            SELECT ue.* FROM unified_events AS ue
+            WHERE ue.status = 'active' AND ({' OR '.join(clauses)})
+            ORDER BY ue.last_seen_at DESC, ue.id DESC LIMIT 1
+            """,
+            parameters,
+        ).fetchone()
+
+    def get_signal_unified_event(self, signal_id: int) -> sqlite3.Row | None:
+        return self.connection.execute(
+            """
+            SELECT ue.* FROM unified_events AS ue
+            JOIN signal_history AS signal ON signal.unified_event_id = ue.id
+            WHERE signal.id = ?
+            """,
+            (signal_id,),
+        ).fetchone()
+
+    def get_unified_event_history(self, event_id: int) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT * FROM unified_event_history
+            WHERE unified_event_id = ? ORDER BY changed_at DESC, id DESC
+            """,
+            (event_id,),
+        ).fetchall()
+
+    def archive_stale_unified_events(self, hours: int = 168) -> int:
+        cursor = self.connection.execute(
+            """
+            UPDATE unified_events SET status = 'archived', updated_at = CURRENT_TIMESTAMP
+            WHERE status = 'active' AND last_seen_at < datetime('now', ?)
+            """,
+            (f"-{hours} hours",),
+        )
+        self.connection.commit()
+        return int(cursor.rowcount)
+
+    def update_unified_event(self, event_id: int, **changes) -> None:
+        allowed = {
+            "primary_content_item_id", "title", "summary", "token", "narrative",
+            "tokens_json", "narratives_json", "detected_conflicts_json",
+            "conflict_count", "requires_review", "first_seen_at", "last_seen_at",
+            "source_count", "item_count", "duplicate_count",
+            "highest_source_priority", "hype_score", "momentum_score", "confidence",
+            "material_version", "last_material_update_at", "status",
+        }
+        assignments = []
+        parameters: list[object] = []
+        for key, value in changes.items():
+            if key not in allowed:
+                raise ValueError(f"Unsupported unified event field: {key}")
+            assignments.append(f"{key} = ?")
+            parameters.append(value)
+        if assignments:
+            assignments.append("updated_at = CURRENT_TIMESTAMP")
+            parameters.append(event_id)
+            self.connection.execute(
+                f"UPDATE unified_events SET {', '.join(assignments)} WHERE id = ?",
+                parameters,
+            )
+            self.connection.commit()
+
+    def save_unified_event_history(
+        self,
+        event_id: int,
+        change_type: str,
+        details: dict,
+    ) -> None:
+        event = self.get_unified_event(event_id)
+        if event is None:
+            return
+        self.connection.execute(
+            """
+            INSERT INTO unified_event_history (
+                unified_event_id, change_type, source_count, item_count,
+                hype_score, momentum_score, details_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id, change_type, event["source_count"], event["item_count"],
+                event["hype_score"], event["momentum_score"],
+                json.dumps(details, ensure_ascii=False),
+            ),
+        )
+        self.connection.commit()
+
+    def sync_content_analysis(self, external_id: str, analysis) -> None:
+        rows = self.connection.execute(
+            "SELECT id FROM content_items WHERE external_id = ? ORDER BY id DESC",
+            (external_id,),
+        ).fetchall()
+        for row in rows:
+            self.connection.execute(
+                "UPDATE content_items SET tokens_json = ?, narratives_json = ? WHERE id = ?",
+                (
+                    json.dumps(analysis.tokens, ensure_ascii=False),
+                    json.dumps(analysis.narratives, ensure_ascii=False),
+                    row["id"],
+                ),
+            )
+            event_id = self.get_unified_event_for_content(int(row["id"]))
+            if event_id is not None:
+                self._refresh_unified_event_entities(event_id)
+                self.connection.execute(
+                    """
+                    UPDATE analyzed_posts SET content_item_id = ?, unified_event_id = ?
+                    WHERE post_id = ?
+                    """,
+                    (row["id"], event_id, external_id),
+                )
+        self.connection.commit()
+
+    def _refresh_unified_event_entities(self, event_id: int) -> None:
+        rows = self.get_unified_event_items(event_id)
+        tokens = list(dict.fromkeys(
+            str(item) for row in rows for item in json.loads(row["tokens_json"] or "[]")
+        ))
+        narratives = list(dict.fromkeys(
+            str(item) for row in rows for item in json.loads(row["narratives_json"] or "[]")
+        ))
+        self.connection.execute(
+            """
+            UPDATE unified_events SET token = ?, narrative = ?, tokens_json = ?,
+                narratives_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+            """,
+            (
+                tokens[0] if tokens else None,
+                narratives[0] if narratives else None,
+                json.dumps(tokens, ensure_ascii=False),
+                json.dumps(narratives, ensure_ascii=False),
+                event_id,
+            ),
+        )
+
+    def get_deduplication_stats(self, days: int = 30) -> sqlite3.Row:
+        return self.connection.execute(
+            """
+            SELECT
+                COUNT(*) AS raw_items,
+                SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END) AS accepted_items,
+                SUM(CASE WHEN status = 'exact_duplicate' THEN 1 ELSE 0 END) AS exact_duplicates,
+                SUM(CASE WHEN status = 'near_duplicate' THEN 1 ELSE 0 END) AS near_duplicates,
+                (SELECT COUNT(*) FROM unified_events
+                 WHERE created_at >= datetime('now', ?)) AS unified_events,
+                (SELECT AVG(source_count) FROM unified_events
+                 WHERE created_at >= datetime('now', ?)) AS average_sources,
+                (SELECT MAX(source_count) FROM unified_events
+                 WHERE created_at >= datetime('now', ?)) AS maximum_sources
+            FROM content_items
+            WHERE fetched_at >= datetime('now', ?)
+            """,
+            (f"-{days} days",) * 4,
+        ).fetchone()
+
+    def get_top_duplicate_sources(self, days: int = 30, limit: int = 5) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT source.name, COUNT(*) AS duplicate_count
+            FROM content_items AS item
+            JOIN content_sources AS source ON source.id = item.source_id
+            WHERE item.status IN ('exact_duplicate', 'near_duplicate')
+              AND item.fetched_at >= datetime('now', ?)
+            GROUP BY source.id ORDER BY duplicate_count DESC, source.name LIMIT ?
+            """,
+            (f"-{days} days", limit),
         ).fetchall()
 
     def get_ai_analysis_distribution(self, field: str) -> list[sqlite3.Row]:
@@ -881,14 +1644,15 @@ class Database:
         confidence: int,
         action: str,
         mentions_count: int | None = None,
+        unified_event_id: int | None = None,
     ) -> int:
         self.connection.execute(
             """
             INSERT INTO signal_history (
                 signal_type, token, narrative, hype_score, momentum_score,
-                confidence, action, mentions_count
+                confidence, action, mentions_count, unified_event_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 signal_type,
@@ -899,6 +1663,7 @@ class Database:
                 confidence,
                 action,
                 mentions_count,
+                unified_event_id,
             ),
         )
         self.connection.commit()
@@ -1477,6 +2242,14 @@ class Database:
             )
             SELECT
                 COUNT(matched.signal_id) AS signals_count,
+                COUNT(DISTINCT signal.unified_event_id) AS unified_event_count,
+                (SELECT COUNT(*)
+                 FROM matched AS raw_matched
+                 JOIN signal_history AS raw_signal
+                   ON raw_signal.id = raw_matched.signal_id
+                 JOIN unified_event_items AS event_item
+                   ON event_item.unified_event_id = raw_signal.unified_event_id)
+                    AS raw_article_count,
                 COUNT(outcome.id) AS evaluated_count,
                 SUM(CASE WHEN outcome.status = 'SUCCESS' THEN 1 ELSE 0 END)
                     AS successful_count,

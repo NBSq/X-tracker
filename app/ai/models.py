@@ -53,6 +53,13 @@ class SignalAnalysisContext(BaseModel):
     recent_outcomes: tuple[dict[str, float | int | str | None], ...] = ()
     related_tokens: tuple[str, ...] = ()
     related_narratives: tuple[str, ...] = ()
+    unified_event_id: int | None = None
+    unified_event_version: int = 0
+    source_count: int = 0
+    item_count: int = 0
+    publication_timeline: tuple[str, ...] = ()
+    detected_conflicts: tuple[str, ...] = ()
+    requires_review: bool = False
 
 
 class SignalAnalysisPayload(BaseModel):

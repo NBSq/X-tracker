@@ -23,6 +23,14 @@ RULE_FIELDS = frozenset(
         "ai_risk_level",
         "openai_analysis_available",
         "ai_fallback_used",
+        "source_count",
+        "item_count",
+        "source_priority",
+        "event_age_minutes",
+        "materially_updated",
+        "duplicate_count",
+        "conflict_count",
+        "requires_review",
     }
 )
 ALERT_ACTIONS = frozenset(
@@ -67,7 +75,10 @@ _TEXT_FIELDS = frozenset(
     {"token", "narrative", "watchlist", "ai_action", "ai_risk_level"}
 )
 _BOOLEAN_FIELDS = frozenset(
-    {"matched_watchlist", "openai_analysis_available", "ai_fallback_used"}
+    {
+        "matched_watchlist", "openai_analysis_available", "ai_fallback_used",
+        "materially_updated", "requires_review",
+    }
 )
 
 
@@ -93,6 +104,14 @@ class SignalFacts:
     ai_risk_level: str | None = None
     openai_analysis_available: bool = False
     ai_fallback_used: bool = False
+    source_count: int = 0
+    item_count: int = 0
+    source_priority: int = 0
+    event_age_minutes: float = 0.0
+    materially_updated: bool = False
+    duplicate_count: int = 0
+    conflict_count: int = 0
+    requires_review: bool = False
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "SignalFacts":
@@ -131,6 +150,22 @@ class SignalFacts:
                 value.get("openai_analysis_available", False)
             ),
             ai_fallback_used=bool(value.get("ai_fallback_used", False)),
+            source_count=int(_number(value.get("source_count", 0), "source_count")),
+            item_count=int(_number(value.get("item_count", 0), "item_count")),
+            source_priority=int(
+                _number(value.get("source_priority", 0), "source_priority")
+            ),
+            event_age_minutes=_number(
+                value.get("event_age_minutes", 0), "event_age_minutes"
+            ),
+            materially_updated=bool(value.get("materially_updated", False)),
+            duplicate_count=int(
+                _number(value.get("duplicate_count", 0), "duplicate_count")
+            ),
+            conflict_count=int(
+                _number(value.get("conflict_count", 0), "conflict_count")
+            ),
+            requires_review=bool(value.get("requires_review", False)),
         )
 
     def value_for(self, field: str) -> Any:

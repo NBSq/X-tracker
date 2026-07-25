@@ -55,7 +55,8 @@ def load_rss_feeds(path: Path) -> list[RSSFeed]:
 
 
 class RSSClient:
-    def __init__(self) -> None:
+    def __init__(self, timeout_seconds: int = 30) -> None:
+        self.timeout_seconds = timeout_seconds
         self.session = requests.Session()
         self.session.headers.update(
             {"User-Agent": "x-narrative-tracker/0.1 (+local RSS reader)"}
@@ -65,6 +66,7 @@ class RSSClient:
         self,
         feeds: list[RSSFeed],
         limit_per_feed: int = 10,
+        raise_errors: bool = False,
     ) -> list[XPost]:
         posts = []
         for feed in feeds:
@@ -72,10 +74,12 @@ class RSSClient:
                 posts.extend(self._fetch_feed(feed, limit_per_feed))
             except Exception:
                 logger.exception("Could not fetch RSS feed: %s", feed.name)
+                if raise_errors:
+                    raise
         return posts
 
     def _fetch_feed(self, feed: RSSFeed, limit: int) -> list[XPost]:
-        response = self.session.get(feed.url, timeout=30)
+        response = self.session.get(feed.url, timeout=self.timeout_seconds)
         response.raise_for_status()
         root = ET.fromstring(response.content)
         items = root.findall("./channel/item")

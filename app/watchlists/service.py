@@ -224,6 +224,8 @@ class WatchlistService:
                     watchlist.name,
                 )
             ),
+            unified_event_count=int(stats["unified_event_count"] or 0),
+            raw_article_count=int(stats["raw_article_count"] or 0),
         )
 
     def _required(self, identifier: int | str) -> Watchlist:

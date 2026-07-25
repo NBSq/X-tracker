@@ -178,3 +178,67 @@ class AIAnalysisFailed:
 class AIAnalysisFallbackUsed:
     signal_id: int
     reason: str
+
+
+@dataclass(frozen=True)
+class ContentFetched:
+    source_id: int
+    source_key: str
+    item_count: int
+    duration_ms: int
+
+
+@dataclass(frozen=True)
+class ContentAccepted:
+    content_item_id: int
+    unified_event_id: int
+    source_key: str
+
+
+@dataclass(frozen=True)
+class ContentDeduplicated:
+    content_item_id: int
+    unified_event_id: int
+    source_key: str
+    match_reason: str
+    similarity_score: float
+
+
+@dataclass(frozen=True)
+class UnifiedEventCreated:
+    unified_event_id: int
+    primary_content_item_id: int
+
+
+@dataclass(frozen=True)
+class UnifiedEventUpdated:
+    unified_event_id: int
+    source_count: int
+    item_count: int
+    new_source_count: int
+
+
+@dataclass(frozen=True)
+class UnifiedEventMateriallyChanged:
+    unified_event_id: int
+    previous_source_count: int
+    current_source_count: int
+    previous_hype_score: float
+    current_hype_score: float
+    previous_momentum_score: float
+    current_momentum_score: float
+    reason: str
+
+
+@dataclass(frozen=True)
+class SourceFetchFailed:
+    source_id: int
+    source_key: str
+    error_type: str
+    consecutive_failures: int
+
+
+@dataclass(frozen=True)
+class SourceRecovered:
+    source_id: int
+    source_key: str

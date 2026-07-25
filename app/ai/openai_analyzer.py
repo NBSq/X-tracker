@@ -130,6 +130,13 @@ class OpenAISignalAnalyzer:
             "recent_outcomes": context.recent_outcomes,
             "related_tokens": context.related_tokens,
             "related_narratives": context.related_narratives,
+            "unified_event_id": context.unified_event_id,
+            "unified_event_version": context.unified_event_version,
+            "source_count": context.source_count,
+            "item_count": context.item_count,
+            "publication_timeline": context.publication_timeline,
+            "detected_conflicts": context.detected_conflicts,
+            "requires_review": context.requires_review,
         }
         return (
             "Analyze the following tracker-owned signal fields and quoted untrusted "

@@ -9,6 +9,8 @@
 </div>
 <section class="metric-grid mb-5" aria-label="Watchlist metrics">
   <article class="metric-card"><span>30d signals</span><strong>{{ report.signals_count }}</strong></article>
+  <article class="metric-card"><span>Unified events</span><strong>{{ report.unified_event_count }}</strong></article>
+  <article class="metric-card"><span>Raw articles</span><strong>{{ report.raw_article_count }}</strong></article>
   <article class="metric-card accent"><span>Success rate</span><strong>{{ '%.1f%%'|format(report.success_rate) if report.success_rate is not none else 'N/A' }}</strong></article>
   <article class="metric-card"><span>Average hype</span><strong>{{ '%.1f'|format(report.average_hype_score) if report.average_hype_score is not none else 'N/A' }}</strong></article>
   <article class="metric-card"><span>Average momentum</span><strong>{{ '%.1f'|format(report.average_momentum_score) if report.average_momentum_score is not none else 'N/A' }}</strong></article>

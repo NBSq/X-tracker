@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Unified Events{% endblock %}
+{% block heading %}Unified Events{% endblock %}
+{% block content %}
+<form class="row g-2 align-items-end mb-4" method="get">
+  <div class="col-md-3"><label class="form-label" for="source">Source</label><select class="form-select" id="source" name="source_id"><option value="">All sources</option>{% for source in sources %}<option value="{{ source.id }}" {% if filters.source_id == source.id %}selected{% endif %}>{{ source.name }}</option>{% endfor %}</select></div>
+  <div class="col-md-2"><label class="form-label" for="token">Token</label><input class="form-control" id="token" name="token" value="{{ filters.token or '' }}"></div>
+  <div class="col-md-2"><label class="form-label" for="narrative">Narrative</label><input class="form-control" id="narrative" name="narrative" value="{{ filters.narrative or '' }}"></div>
+  <div class="col-md-2"><label class="form-label" for="event-status">Status</label><select class="form-select" id="event-status" name="status"><option value="">All</option><option value="active" {% if filters.status == 'active' %}selected{% endif %}>Active</option><option value="archived" {% if filters.status == 'archived' %}selected{% endif %}>Archived</option></select></div>
+  <div class="col-md-2"><label class="form-label" for="from-date">From</label><input class="form-control" type="date" id="from-date" name="from_date" value="{{ filters.from_date or '' }}"></div>
+  <div class="col-md-2"><label class="form-label" for="to-date">To</label><input class="form-control" type="date" id="to-date" name="to_date" value="{{ filters.to_date or '' }}"></div>
+  <div class="col-md-2"><button class="btn btn-primary w-100" type="submit">Filter</button></div>
+</form>
+<div class="table-responsive border rounded"><table class="table table-hover align-middle mb-0"><thead><tr><th>Event</th><th>Token / narrative</th><th>Coverage</th><th>First seen</th><th>Updated</th><th>Hype</th><th>Momentum</th><th>Confidence</th><th>Review</th></tr></thead><tbody>
+{% for event in events %}<tr><td><a class="fw-semibold text-decoration-none" href="/unified-events/{{ event.id }}">{{ event.title }}</a><div class="small text-secondary">{{ event.primary_source_name }}</div></td><td>{{ event.token or '-' }}<div class="small text-secondary">{{ event.narrative or '-' }}</div></td><td>{{ event.source_count }} sources / {{ event.item_count }} items</td><td>{{ event.first_seen_at }}</td><td>{{ event.last_seen_at }}</td><td>{{ '%.1f'|format(event.hype_score) }}</td><td>{{ '%.1f'|format(event.momentum_score) }}</td><td>{{ '%.1f'|format(event.confidence) }}</td><td>{% if event.requires_review %}<span class="badge text-bg-warning">Review</span>{% else %}<span class="badge text-bg-success">Clear</span>{% endif %}</td></tr>{% else %}<tr><td colspan="9" class="text-center text-secondary py-4">No unified events yet.</td></tr>{% endfor %}
+</tbody></table></div>
+{% endblock %}

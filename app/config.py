@@ -42,6 +42,27 @@ class Config:
     openai_fallback_to_mock: bool = True
     openai_store_responses: bool = False
     openai_max_post_length: int = 600
+    content_sources_path: Path = BASE_DIR / "config" / "sources.json"
+    source_fetch_timeout_seconds: int = 20
+    source_max_retries: int = 2
+    source_default_interval_seconds: int = 300
+    source_failure_backoff_seconds: int = 600
+    source_max_items_per_fetch: int = 100
+    source_enabled: bool = True
+    deduplication_enabled: bool = True
+    deduplication_time_window_hours: int = 24
+    deduplication_title_similarity_threshold: float = 0.82
+    deduplication_body_similarity_threshold: float = 0.88
+    deduplication_min_shared_entities: int = 1
+    deduplication_cross_source_only: bool = False
+    event_update_notifications: bool = True
+    event_update_min_new_sources: int = 2
+    event_update_min_hype_change: float = 10.0
+    event_update_min_momentum_change: float = 10.0
+    event_update_cooldown_minutes: int = 30
+    source_alert_after_failures: int = 3
+    source_failure_alert_cooldown_minutes: int = 60
+    source_recovery_notifications: bool = True
 
 
 def _get_int_env(name: str, default: str) -> int:
@@ -147,6 +168,65 @@ def load_config() -> Config:
             "false",
         ),
         openai_max_post_length=_get_int_env("OPENAI_MAX_POST_LENGTH", "600"),
+        content_sources_path=BASE_DIR
+        / os.getenv(
+            "CONTENT_SOURCES_PATH",
+            os.getenv("CONTENT_SOURCES_FILE", "config/sources.json"),
+        ),
+        source_fetch_timeout_seconds=_get_int_env(
+            "SOURCE_FETCH_TIMEOUT_SECONDS", "20"
+        ),
+        source_max_retries=_get_int_env("SOURCE_MAX_RETRIES", "2"),
+        source_default_interval_seconds=_get_int_env(
+            "SOURCE_DEFAULT_INTERVAL_SECONDS", "300"
+        ),
+        source_failure_backoff_seconds=_get_int_env(
+            "SOURCE_FAILURE_BACKOFF_SECONDS", "600"
+        ),
+        source_max_items_per_fetch=_get_int_env(
+            "SOURCE_MAX_ITEMS_PER_FETCH", "100"
+        ),
+        source_enabled=_get_bool_env("SOURCE_ENABLED", "true"),
+        deduplication_enabled=_get_bool_env("DEDUPLICATION_ENABLED", "true"),
+        deduplication_time_window_hours=_get_int_env(
+            "DEDUPLICATION_TIME_WINDOW_HOURS", "24"
+        ),
+        deduplication_title_similarity_threshold=_get_float_env(
+            "DEDUPLICATION_TITLE_SIMILARITY_THRESHOLD", "0.82"
+        ),
+        deduplication_body_similarity_threshold=_get_float_env(
+            "DEDUPLICATION_BODY_SIMILARITY_THRESHOLD", "0.88"
+        ),
+        deduplication_min_shared_entities=_get_int_env(
+            "DEDUPLICATION_MIN_SHARED_ENTITIES", "1"
+        ),
+        deduplication_cross_source_only=_get_bool_env(
+            "DEDUPLICATION_CROSS_SOURCE_ONLY", "false"
+        ),
+        event_update_notifications=_get_bool_env(
+            "EVENT_UPDATE_NOTIFICATIONS", "true"
+        ),
+        event_update_min_new_sources=_get_int_env(
+            "EVENT_UPDATE_MIN_NEW_SOURCES", "2"
+        ),
+        event_update_min_hype_change=_get_float_env(
+            "EVENT_UPDATE_MIN_HYPE_CHANGE", "10"
+        ),
+        event_update_min_momentum_change=_get_float_env(
+            "EVENT_UPDATE_MIN_MOMENTUM_CHANGE", "10"
+        ),
+        event_update_cooldown_minutes=_get_int_env(
+            "EVENT_UPDATE_COOLDOWN_MINUTES", "30"
+        ),
+        source_alert_after_failures=_get_int_env(
+            "SOURCE_ALERT_AFTER_FAILURES", "3"
+        ),
+        source_failure_alert_cooldown_minutes=_get_int_env(
+            "SOURCE_FAILURE_ALERT_COOLDOWN_MINUTES", "60"
+        ),
+        source_recovery_notifications=_get_bool_env(
+            "SOURCE_RECOVERY_NOTIFICATIONS", "true"
+        ),
     )
     if config.openai_timeout_seconds <= 0:
         raise RuntimeError("OPENAI_TIMEOUT_SECONDS must be positive")
@@ -166,4 +246,28 @@ def load_config() -> Config:
         raise RuntimeError("OPENAI_MIN_MOMENTUM_SCORE must be between 0 and 100")
     if not 0 <= config.openai_min_confidence <= 10:
         raise RuntimeError("OPENAI_MIN_CONFIDENCE must be between 0 and 10")
+    positive_values = {
+        "SOURCE_FETCH_TIMEOUT_SECONDS": config.source_fetch_timeout_seconds,
+        "SOURCE_DEFAULT_INTERVAL_SECONDS": config.source_default_interval_seconds,
+        "SOURCE_FAILURE_BACKOFF_SECONDS": config.source_failure_backoff_seconds,
+        "SOURCE_MAX_ITEMS_PER_FETCH": config.source_max_items_per_fetch,
+        "DEDUPLICATION_TIME_WINDOW_HOURS": config.deduplication_time_window_hours,
+        "EVENT_UPDATE_MIN_NEW_SOURCES": config.event_update_min_new_sources,
+        "EVENT_UPDATE_COOLDOWN_MINUTES": config.event_update_cooldown_minutes,
+        "SOURCE_ALERT_AFTER_FAILURES": config.source_alert_after_failures,
+        "SOURCE_FAILURE_ALERT_COOLDOWN_MINUTES": config.source_failure_alert_cooldown_minutes,
+    }
+    for name, value in positive_values.items():
+        if value <= 0:
+            raise RuntimeError(f"{name} must be positive")
+    if config.source_max_retries < 0:
+        raise RuntimeError("SOURCE_MAX_RETRIES cannot be negative")
+    if config.deduplication_min_shared_entities < 0:
+        raise RuntimeError("DEDUPLICATION_MIN_SHARED_ENTITIES cannot be negative")
+    for name, value in {
+        "DEDUPLICATION_TITLE_SIMILARITY_THRESHOLD": config.deduplication_title_similarity_threshold,
+        "DEDUPLICATION_BODY_SIMILARITY_THRESHOLD": config.deduplication_body_similarity_threshold,
+    }.items():
+        if not 0 <= value <= 1:
+            raise RuntimeError(f"{name} must be between 0 and 1")
     return config

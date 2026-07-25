@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import logging
 from collections.abc import Mapping
 from typing import Any
@@ -149,6 +151,21 @@ class RuleEngine:
         )
         watchlist_context = self.db.get_signal_watchlist_context(signal_id)
         analysis = self.db.get_signal_ai_analysis(signal_id)
+        unified_event = self.db.get_signal_unified_event(signal_id)
+        event_age_minutes = 0.0
+        if unified_event is not None:
+            try:
+                first_seen = datetime.fromisoformat(
+                    str(unified_event["first_seen_at"]).replace("Z", "+00:00")
+                )
+                if first_seen.tzinfo is None:
+                    first_seen = first_seen.replace(tzinfo=timezone.utc)
+                event_age_minutes = max(
+                    0.0,
+                    (datetime.now(timezone.utc) - first_seen).total_seconds() / 60,
+                )
+            except ValueError:
+                pass
         facts = SignalFacts(
             token=signal["token"],
             narrative=signal["narrative"],
@@ -172,6 +189,22 @@ class RuleEngine:
             ai_fallback_used=(
                 bool(analysis["fallback_used"]) if analysis is not None else False
             ),
+            source_count=int(unified_event["source_count"]) if unified_event else 0,
+            item_count=int(unified_event["item_count"]) if unified_event else 0,
+            source_priority=(
+                int(unified_event["highest_source_priority"]) if unified_event else 0
+            ),
+            event_age_minutes=event_age_minutes,
+            materially_updated=(
+                int(unified_event["material_version"]) > 1 if unified_event else False
+            ),
+            duplicate_count=(
+                int(unified_event["duplicate_count"]) if unified_event else 0
+            ),
+            conflict_count=(
+                int(unified_event["conflict_count"]) if unified_event else 0
+            ),
+            requires_review=bool(unified_event["requires_review"]) if unified_event else False,
         )
         for rule in enabled_rules:
             uses_ai = condition_uses_ai(rule.condition)

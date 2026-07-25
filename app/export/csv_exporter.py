@@ -187,6 +187,32 @@ WATCHLIST_SIGNAL_COLUMNS = (
     "outcome_status",
 )
 
+SOURCE_COLUMNS = (
+    "id", "source_key", "name", "source_type", "url", "enabled", "priority",
+    "fetch_interval_seconds", "last_fetch_at", "last_success_at", "last_error_at",
+    "consecutive_failures", "successful_fetches", "failed_fetches", "success_rate",
+    "average_latency_ms",
+)
+
+CONTENT_ITEM_COLUMNS = (
+    "id", "source_id", "source_key", "source_name", "external_id", "title", "body",
+    "canonical_url", "author", "published_at", "fetched_at", "language", "status",
+    "duplicate_reason", "duplicate_of_content_item_id", "unified_event_id",
+)
+
+UNIFIED_EVENT_COLUMNS = (
+    "id", "event_key", "title", "summary", "token", "narrative", "tokens_json",
+    "narratives_json", "first_seen_at", "last_seen_at", "source_count", "item_count",
+    "duplicate_count", "highest_source_priority", "hype_score", "momentum_score",
+    "confidence", "conflict_count", "requires_review", "material_version", "status",
+)
+
+DEDUPLICATION_COLUMNS = (
+    "period_days", "raw_items", "accepted_items", "exact_duplicates",
+    "near_duplicates", "unified_events", "duplicate_reduction_percent",
+    "average_sources", "maximum_sources",
+)
+
 
 @dataclass(frozen=True)
 class ExportedCSV:
@@ -232,6 +258,10 @@ class CSVExportService:
             "history",
             "watchlists",
             "watchlist_signals",
+            "sources",
+            "content_items",
+            "unified_events",
+            "deduplication",
         }
         if unsupported:
             raise ValueError(f"Unsupported CSV export type: {sorted(unsupported)[0]}")
@@ -265,7 +295,52 @@ class CSVExportService:
                     to_value,
                 )
             )
+        if "sources" in selected:
+            files.append(self._export_sources(timestamp))
+        if "content_items" in selected:
+            files.append(self._export_content_items(timestamp, from_value, to_value))
+        if "unified_events" in selected:
+            files.append(self._export_unified_events(timestamp))
+        if "deduplication" in selected:
+            files.append(self._export_deduplication(timestamp))
         return CSVExportResult(tuple(files))
+
+    def _export_sources(self, timestamp: str) -> ExportedCSV:
+        rows = [dict(row) for row in self.database.get_content_sources()]
+        path = self._write("sources", timestamp, SOURCE_COLUMNS, rows)
+        return ExportedCSV("sources", path, len(rows))
+
+    def _export_content_items(
+        self, timestamp: str, from_date: str | None, to_date: str | None,
+    ) -> ExportedCSV:
+        rows = [
+            dict(row) for row in self.database.get_content_items(
+                limit=None, from_date=from_date, to_date=to_date
+            )
+        ]
+        path = self._write("content_items", timestamp, CONTENT_ITEM_COLUMNS, rows)
+        return ExportedCSV("content_items", path, len(rows))
+
+    def _export_unified_events(self, timestamp: str) -> ExportedCSV:
+        rows = [dict(row) for row in self.database.get_unified_events(limit=None)]
+        path = self._write("unified_events", timestamp, UNIFIED_EVENT_COLUMNS, rows)
+        return ExportedCSV("unified_events", path, len(rows))
+
+    def _export_deduplication(self, timestamp: str) -> ExportedCSV:
+        stats = dict(self.database.get_deduplication_stats(30))
+        raw = int(stats.get("raw_items") or 0)
+        duplicates = int(stats.get("exact_duplicates") or 0) + int(
+            stats.get("near_duplicates") or 0
+        )
+        row = {
+            "period_days": 30,
+            **stats,
+            "duplicate_reduction_percent": duplicates / raw * 100 if raw else 0.0,
+        }
+        path = self._write(
+            "deduplication_report", timestamp, DEDUPLICATION_COLUMNS, [row]
+        )
+        return ExportedCSV("deduplication", path, 1)
 
     def _export_signals(
         self,

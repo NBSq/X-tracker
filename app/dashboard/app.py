@@ -17,6 +17,7 @@ from app.events import EventBus, NarrativeDetected, PerformanceUpdated, Watchlis
 from app.dashboard.service import DashboardService
 from app.rules import RuleValidationError
 from app.watchlists import WatchlistValidationError
+from app.ingestion.service import MultiSourceIngestionService
 
 
 DASHBOARD_DIR = Path(__file__).resolve().parent
@@ -70,6 +71,26 @@ class WatchlistUpdatePayload(BaseModel):
 class WatchlistItemPayload(BaseModel):
     item_type: str = Field(pattern="^(token|narrative)$")
     item_value: str = Field(min_length=1, max_length=120)
+
+
+class SourceCreatePayload(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=120)
+    type: str = Field(pattern="^(rss|atom|feed|local_json)$")
+    url: str = Field(min_length=1, max_length=2000)
+    enabled: bool = True
+    priority: int = Field(default=5, ge=0, le=10)
+    categories: list[str] = Field(default_factory=list)
+    fetch_interval_seconds: int = Field(default=300, ge=1)
+
+
+class SourceUpdatePayload(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    source_type: str | None = Field(default=None, pattern="^(rss|atom|feed|local_json)$")
+    url: str | None = Field(default=None, min_length=1, max_length=2000)
+    enabled: bool | None = None
+    priority: int | None = Field(default=None, ge=0, le=10)
+    fetch_interval_seconds: int | None = Field(default=None, ge=1)
 
 
 class DashboardEventState:
@@ -382,6 +403,63 @@ def create_app(
             status=service.status(),
         )
 
+    @app.get("/sources", response_class=HTMLResponse)
+    def sources_page(request: Request):
+        return render(
+            request, "sources.html", "sources", sources=service.sources(),
+            status=service.status(),
+        )
+
+    @app.get("/sources/{source_id}", response_class=HTMLResponse)
+    def source_detail_page(request: Request, source_id: int):
+        detail = service.source_detail(source_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+        return render(
+            request, "source_detail.html", "sources", detail=detail,
+            status=service.status(),
+        )
+
+    @app.get("/unified-events", response_class=HTMLResponse)
+    def unified_events_page(
+        request: Request,
+        source_id: int | None = None,
+        token: str | None = None,
+        narrative: str | None = None,
+        status_filter: str | None = Query(default=None, alias="status"),
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ):
+        filters = {
+            "source_id": source_id, "token": token, "narrative": narrative,
+            "status": status_filter, "from_date": from_date, "to_date": to_date,
+        }
+        return render(
+            request, "unified_events.html", "unified_events",
+            events=service.unified_events(
+                source_id=source_id, token=token, narrative=narrative,
+                status=status_filter, from_date=from_date, to_date=to_date,
+            ),
+            sources=service.sources(), filters=filters, status=service.status(),
+        )
+
+    @app.get("/unified-events/{event_id}", response_class=HTMLResponse)
+    def unified_event_detail_page(request: Request, event_id: int):
+        detail = service.unified_event_detail(event_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Unified event not found")
+        return render(
+            request, "unified_event_detail.html", "unified_events", detail=detail,
+            status=service.status(),
+        )
+
+    @app.get("/deduplication", response_class=HTMLResponse)
+    def deduplication_page(request: Request):
+        return render(
+            request, "deduplication.html", "deduplication",
+            deduplication=service.deduplication(), status=service.status(),
+        )
+
     @app.get("/api/signals")
     def signals_api(
         limit: int = Query(default=50, ge=1, le=200),
@@ -625,6 +703,118 @@ def create_app(
         if service.watchlist(watchlist_id) is None:
             raise HTTPException(status_code=404, detail="Watchlist not found")
         return service.history(valid_period(period), watchlist_id)
+
+    @app.get("/api/sources")
+    def sources_api():
+        return {"sources": service.sources()}
+
+    @app.post("/api/sources", status_code=status.HTTP_201_CREATED)
+    def create_source_api(payload: SourceCreatePayload):
+        try:
+            return service.create_source(payload.model_dump())
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/sources/{source_id}")
+    def source_api(source_id: int):
+        detail = service.source_detail(source_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+        return detail
+
+    @app.put("/api/sources/{source_id}")
+    def update_source_api(source_id: int, payload: SourceUpdatePayload):
+        try:
+            return service.update_source(
+                source_id, payload.model_dump(exclude_none=True)
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Source not found") from exc
+
+    @app.delete("/api/sources/{source_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_source_api(source_id: int):
+        try:
+            service.delete_source(source_id)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="Source not found or has retained content items",
+            ) from exc
+
+    @app.post("/api/sources/{source_id}/fetch")
+    def fetch_source_api(source_id: int):
+        try:
+            return service.fetch_source(source_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Source not found") from exc
+
+    @app.post("/api/sources/{source_id}/enable")
+    def enable_source_api(source_id: int):
+        try:
+            return service.update_source(source_id, {"enabled": True})
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Source not found") from exc
+
+    @app.post("/api/sources/{source_id}/disable")
+    def disable_source_api(source_id: int):
+        try:
+            return service.update_source(source_id, {"enabled": False})
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Source not found") from exc
+
+    @app.get("/api/unified-events")
+    def unified_events_api(
+        source_id: int | None = None,
+        token: str | None = None,
+        narrative: str | None = None,
+        status_filter: str | None = Query(default=None, alias="status"),
+        from_date: str | None = None,
+        to_date: str | None = None,
+        limit: int = Query(default=100, ge=1, le=500),
+    ):
+        return {
+            "events": service.unified_events(
+                source_id=source_id, token=token, narrative=narrative,
+                status=status_filter, from_date=from_date, to_date=to_date,
+                limit=limit,
+            )
+        }
+
+    @app.get("/api/unified-events/{event_id}")
+    def unified_event_api(event_id: int):
+        detail = service.unified_event_detail(event_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Unified event not found")
+        return detail
+
+    @app.get("/api/unified-events/{event_id}/items")
+    def unified_event_items_api(event_id: int):
+        detail = service.unified_event_detail(event_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Unified event not found")
+        return {"items": detail["items"]}
+
+    @app.get("/api/unified-events/{event_id}/history")
+    def unified_event_history_api(event_id: int):
+        detail = service.unified_event_detail(event_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Unified event not found")
+        return {"history": detail["history"]}
+
+    @app.get("/api/deduplication/stats")
+    def deduplication_stats_api(days: int = Query(default=30, ge=1, le=3650)):
+        return service.deduplication(days)
+
+    @app.post("/api/deduplication/rebuild")
+    def deduplication_rebuild_api():
+        db = service._database()
+        try:
+            processed, created = MultiSourceIngestionService(
+                db, service.config
+            ).events.rebuild()
+            return {"processed": processed, "created": created}
+        finally:
+            db.close()
 
     return app
 

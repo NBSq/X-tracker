@@ -4,6 +4,9 @@ from app.events.models import (
     AIAnalysisFailed,
     AIAnalysisFallbackUsed,
     AIAnalysisRequested,
+    ContentAccepted,
+    ContentDeduplicated,
+    ContentFetched,
     NarrativeDetected,
     PerformanceUpdated,
     RSSFetched,
@@ -11,6 +14,11 @@ from app.events.models import (
     WatchlistMatched,
     SignalEvaluationRequested,
     SignalEvaluated,
+    SourceFetchFailed,
+    SourceRecovered,
+    UnifiedEventCreated,
+    UnifiedEventMateriallyChanged,
+    UnifiedEventUpdated,
 )
 
 __all__ = [
@@ -19,6 +27,9 @@ __all__ = [
     "AIAnalysisFailed",
     "AIAnalysisFallbackUsed",
     "AIAnalysisRequested",
+    "ContentAccepted",
+    "ContentDeduplicated",
+    "ContentFetched",
     "NarrativeDetected",
     "PerformanceUpdated",
     "RSSFetched",
@@ -26,4 +37,9 @@ __all__ = [
     "WatchlistMatched",
     "SignalEvaluationRequested",
     "SignalEvaluated",
+    "SourceFetchFailed",
+    "SourceRecovered",
+    "UnifiedEventCreated",
+    "UnifiedEventMateriallyChanged",
+    "UnifiedEventUpdated",
 ]

@@ -14,6 +14,8 @@ from app.events.subscribers import AIRuleEvaluationSubscriber
 from app.scoring.hype_score import normalize_hype_score
 from app.rules import RuleService
 from app.watchlists import WatchlistService
+from app.ingestion.models import SourceDefinition
+from app.ingestion.service import MultiSourceIngestionService
 
 
 class DashboardService:
@@ -39,6 +41,153 @@ class DashboardService:
                 "outcomes": int(row["outcomes"] or 0),
                 "last_analysis_at": row["last_analysis_at"],
                 "last_signal_at": row["last_signal_at"],
+            }
+        finally:
+            db.close()
+
+    def sources(self) -> list[dict[str, Any]]:
+        db = self._database()
+        try:
+            MultiSourceIngestionService(db, self.config).sync_configured_sources()
+            return [dict(row) for row in db.get_content_sources()]
+        finally:
+            db.close()
+
+    def source_detail(self, identifier: int | str) -> dict[str, Any] | None:
+        db = self._database()
+        try:
+            row = db.get_content_source(identifier)
+            if row is None:
+                return None
+            return {
+                "source": dict(row),
+                "items": [
+                    dict(item) for item in db.get_content_items(
+                        limit=100, source_id=int(row["id"])
+                    )
+                ],
+            }
+        finally:
+            db.close()
+
+    def create_source(self, payload: dict[str, Any]) -> dict[str, Any]:
+        db = self._database()
+        try:
+            definition = SourceDefinition.from_mapping(payload)
+            db.upsert_content_source(definition)
+            return dict(db.get_content_source(definition.source_key))
+        finally:
+            db.close()
+
+    def update_source(self, source_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        db = self._database()
+        try:
+            if not db.update_content_source(source_id, **payload):
+                raise KeyError(source_id)
+            return dict(db.get_content_source(source_id))
+        finally:
+            db.close()
+
+    def delete_source(self, source_id: int) -> None:
+        db = self._database()
+        try:
+            if not db.delete_content_source(source_id):
+                raise KeyError(source_id)
+        finally:
+            db.close()
+
+    def fetch_source(self, source_id: int) -> dict[str, Any]:
+        db = self._database()
+        try:
+            result = MultiSourceIngestionService(db, self.config).fetch_source(source_id)
+            return {
+                "fetched_count": result.fetched_count,
+                "accepted_count": result.accepted_count,
+                "duplicate_count": result.duplicate_count,
+                "new_event_count": result.new_event_count,
+            }
+        finally:
+            db.close()
+
+    def unified_events(
+        self,
+        *,
+        source_id: int | None = None,
+        token: str | None = None,
+        narrative: str | None = None,
+        status: str | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        db = self._database()
+        try:
+            rows = [dict(row) for row in db.get_unified_events(limit=None, status=status)]
+            if source_id is not None:
+                event_ids = {
+                    int(item["unified_event_id"])
+                    for item in db.get_content_items(limit=None, source_id=source_id)
+                    if item["unified_event_id"] is not None
+                }
+                rows = [row for row in rows if int(row["id"]) in event_ids]
+            if token:
+                rows = [row for row in rows if token.casefold() in str(row["tokens_json"]).casefold()]
+            if narrative:
+                rows = [
+                    row for row in rows
+                    if narrative.casefold() in str(row["narratives_json"]).casefold()
+                ]
+            if from_date:
+                rows = [row for row in rows if str(row["last_seen_at"])[:10] >= from_date]
+            if to_date:
+                rows = [row for row in rows if str(row["first_seen_at"])[:10] <= to_date]
+            return rows[: max(1, min(limit, 500))]
+        finally:
+            db.close()
+
+    def unified_event_detail(self, event_id: int) -> dict[str, Any] | None:
+        db = self._database()
+        try:
+            event = db.get_unified_event(event_id)
+            if event is None:
+                return None
+            signal_row = db.connection.execute(
+                """
+                SELECT id FROM signal_history
+                WHERE unified_event_id = ? ORDER BY timestamp DESC, id DESC LIMIT 1
+                """,
+                (event_id,),
+            ).fetchone()
+            payload = {
+                "event": dict(event),
+                "items": [dict(row) for row in db.get_unified_event_items(event_id)],
+                "history": [dict(row) for row in db.get_unified_event_history(event_id)],
+            }
+            if signal_row is not None:
+                payload["signal"] = self.signal_detail(int(signal_row["id"]))
+            else:
+                payload["signal"] = None
+            return payload
+        finally:
+            db.close()
+
+    def deduplication(self, days: int = 30) -> dict[str, Any]:
+        db = self._database()
+        try:
+            stats = dict(db.get_deduplication_stats(days))
+            raw = int(stats.get("raw_items") or 0)
+            duplicate_total = int(stats.get("exact_duplicates") or 0) + int(
+                stats.get("near_duplicates") or 0
+            )
+            return {
+                **stats,
+                "period_days": days,
+                "duplicate_reduction_percent": round(
+                    duplicate_total / raw * 100 if raw else 0.0, 1
+                ),
+                "top_duplicate_sources": [
+                    dict(row) for row in db.get_top_duplicate_sources(days)
+                ],
             }
         finally:
             db.close()
@@ -160,6 +309,19 @@ class DashboardService:
         if signal is None:
             return None
         signal["ai_analysis"] = self.signal_analysis(signal_id)
+        db = self._database()
+        try:
+            signal["watchlists"] = [
+                dict(row) for row in db.get_signal_watchlists(signal_id)
+            ]
+            signal["triggered_rules"] = [
+                dict(row) for row in db.get_rule_matches(signal_id)
+            ]
+            signal["outcomes"] = [
+                dict(row) for row in db.get_signal_outcomes(signal_id=signal_id)
+            ]
+        finally:
+            db.close()
         return signal
 
     def ai_status(self) -> dict[str, Any]:

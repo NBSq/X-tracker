@@ -247,6 +247,40 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep RSS mode running and poll continuously",
     )
+    parser.add_argument("--list-sources", action="store_true", help="List content sources")
+    parser.add_argument("--source-status", action="store_true", help="Show source health")
+    parser.add_argument("--fetch-source", metavar="ID", help="Fetch one configured source")
+    parser.add_argument("--enable-source", metavar="ID", help="Enable a content source")
+    parser.add_argument("--disable-source", metavar="ID", help="Disable a content source")
+    parser.add_argument(
+        "--list-unified-events", action="store_true", help="List recent unified events"
+    )
+    parser.add_argument(
+        "--show-unified-event", type=positive_int, metavar="ID",
+        help="Show a unified event with source items and history",
+    )
+    parser.add_argument(
+        "--deduplication-report", action="store_true",
+        help="Print multi-source deduplication statistics",
+    )
+    parser.add_argument(
+        "--rebuild-unified-events", action="store_true",
+        help="Idempotently associate historical content with unified events",
+    )
+    parser.add_argument(
+        "--export-sources-csv", action="store_true", help="Export content sources"
+    )
+    parser.add_argument(
+        "--export-content-items-csv", action="store_true", help="Export content items"
+    )
+    parser.add_argument(
+        "--export-unified-events-csv", action="store_true", help="Export unified events"
+    )
+    parser.add_argument(
+        "--export-deduplication-csv", "--export-deduplication-report-csv",
+        dest="export_deduplication_csv", action="store_true",
+        help="Export deduplication statistics",
+    )
     parser.add_argument(
         "--dashboard",
         action="store_true",
@@ -605,6 +639,14 @@ def requested_csv_exports(args: argparse.Namespace) -> tuple[str, ...]:
         kinds.append("watchlists")
     if args.export_watchlist_signals_csv:
         kinds.append("watchlist_signals")
+    if args.export_sources_csv:
+        kinds.append("sources")
+    if args.export_content_items_csv:
+        kinds.append("content_items")
+    if args.export_unified_events_csv:
+        kinds.append("unified_events")
+    if args.export_deduplication_csv:
+        kinds.append("deduplication")
     if args.export_csv == "all":
         kinds.extend(("signals", "outcomes", "performance"))
     elif args.export_csv:
@@ -692,6 +734,7 @@ def process_posts(
         try:
             analysis = analyzer.analyze_post(post.text)
             db.save_analysis(post, analysis)
+            db.sync_content_analysis(post.id, analysis)
             for narrative in analysis.narratives:
                 bus.publish(
                     NarrativeDetected.create(
@@ -918,7 +961,7 @@ def build_event_bus(
         if config is not None
         else None
     )
-    register_default_subscribers(event_bus, db, telegram, reasoning)
+    register_default_subscribers(event_bus, db, telegram, reasoning, config)
     return event_bus
 
 
@@ -1445,9 +1488,7 @@ def run_rss_once(
     no_telegram: bool = False,
     mock_ai: bool = False,
 ) -> None:
-    feeds = load_rss_feeds(config.rss_feeds_path)
     narratives = load_json_list(config.narratives_path, "narratives")
-    posts = RSSClient().fetch_recent_posts(feeds, config.rss_articles_per_feed)
     analyzer = build_analyzer(config, narratives, mock_ai)
     telegram = build_telegram(config, no_telegram)
     event_bus = build_event_bus(
@@ -1456,7 +1497,14 @@ def run_rss_once(
         config,
         force_mock_ai=mock_ai,
     )
-    event_bus.publish(RSSFetched.create(posts, len(feeds)))
+    from app.ingestion.service import MultiSourceIngestionService
+
+    ingestion = MultiSourceIngestionService(db, config, event_bus)
+    result = ingestion.fetch_all()
+    posts = list(result.posts)
+    event_bus.publish(
+        RSSFetched.create(posts, len(db.get_content_sources(enabled=True)))
+    )
     process_posts(
         posts,
         analyzer,
@@ -1499,6 +1547,79 @@ def run_dashboard(config: Config, host: str, port: int) -> None:
 
     logger.info("Dashboard available at http://%s:%d", host, port)
     uvicorn.run(create_app(config.database_path, config=config), host=host, port=port)
+
+
+def requested_ingestion_command(args: argparse.Namespace) -> bool:
+    return any(
+        (
+            args.list_sources,
+            args.source_status,
+            args.fetch_source,
+            args.enable_source,
+            args.disable_source,
+            args.list_unified_events,
+            args.show_unified_event,
+            args.deduplication_report,
+            args.rebuild_unified_events,
+        )
+    )
+
+
+def run_ingestion_command(
+    args: argparse.Namespace,
+    config: Config,
+    db: Database,
+) -> None:
+    from app.ingestion.service import MultiSourceIngestionService, format_deduplication_report
+
+    service = MultiSourceIngestionService(db, config)
+    service.sync_configured_sources()
+    if args.enable_source or args.disable_source:
+        identifier = args.enable_source or args.disable_source
+        enabled = bool(args.enable_source)
+        if not db.update_content_source(identifier, enabled=enabled):
+            raise ValueError(f"Content source not found: {identifier}")
+        logger.info("Source %s %s", identifier, "enabled" if enabled else "disabled")
+    elif args.fetch_source:
+        result = service.fetch_source(args.fetch_source)
+        logger.info(
+            "Source fetch complete: %d fetched, %d accepted, %d duplicates, %d new events",
+            result.fetched_count, result.accepted_count, result.duplicate_count,
+            result.new_event_count,
+        )
+    elif args.list_sources or args.source_status:
+        for row in db.get_content_sources():
+            logger.info(
+                "%s | %s | %s | priority=%s | failures=%s | success=%.1f%%",
+                row["source_key"], "enabled" if row["enabled"] else "disabled",
+                row["source_type"], row["priority"], row["consecutive_failures"],
+                float(row["success_rate"]),
+            )
+    elif args.list_unified_events:
+        for row in db.get_unified_events(limit=100):
+            logger.info(
+                "%s | %s | sources=%s items=%s hype=%.1f momentum=%.1f",
+                row["id"], row["title"], row["source_count"], row["item_count"],
+                float(row["hype_score"]), float(row["momentum_score"]),
+            )
+    elif args.show_unified_event:
+        event = db.get_unified_event(args.show_unified_event)
+        if event is None:
+            raise ValueError(f"Unified event not found: {args.show_unified_event}")
+        payload = {
+            "event": dict(event),
+            "items": [dict(row) for row in db.get_unified_event_items(event["id"])],
+            "history": [dict(row) for row in db.get_unified_event_history(event["id"])],
+        }
+        logger.info("Unified event\n%s", json.dumps(payload, indent=2, default=str))
+    elif args.deduplication_report:
+        logger.info("\n%s", format_deduplication_report(db))
+    elif args.rebuild_unified_events:
+        processed, created = service.events.rebuild()
+        logger.info(
+            "Unified event rebuild complete: %d content items checked, %d events created",
+            processed, created,
+        )
 
 
 def main() -> None:
@@ -1561,6 +1682,9 @@ def main() -> None:
             return
         if requested_rule_command(args):
             run_rule_command(args, db)
+            return
+        if requested_ingestion_command(args):
+            run_ingestion_command(args, config, db)
             return
         export_kinds = requested_csv_exports(args)
         if export_kinds:

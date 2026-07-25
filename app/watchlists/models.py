@@ -96,6 +96,8 @@ class WatchlistReport:
     last_matched_at: str | None
     latest_matches: tuple[dict[str, Any], ...]
     related_rules: tuple[dict[str, Any], ...] = ()
+    unified_event_count: int = 0
+    raw_article_count: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

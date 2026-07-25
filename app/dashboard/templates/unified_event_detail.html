@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Event {{ detail.event.id }}{% endblock %}
+{% block heading %}{{ detail.event.title }}{% endblock %}
+{% block content %}
+<div class="row g-3 mb-4">
+  <div class="col-sm-3"><div class="metric-panel"><span class="metric-label">Sources</span><strong>{{ detail.event.source_count }}</strong></div></div>
+  <div class="col-sm-3"><div class="metric-panel"><span class="metric-label">Items</span><strong>{{ detail.event.item_count }}</strong></div></div>
+  <div class="col-sm-3"><div class="metric-panel"><span class="metric-label">Hype</span><strong>{{ '%.1f'|format(detail.event.hype_score) }}</strong></div></div>
+  <div class="col-sm-3"><div class="metric-panel"><span class="metric-label">Momentum</span><strong>{{ '%.1f'|format(detail.event.momentum_score) }}</strong></div></div>
+</div>
+{% if detail.event.requires_review %}<div class="alert alert-warning"><strong>Conflicting details detected.</strong> {{ detail.event.detected_conflicts_json }}</div>{% endif %}
+<p class="lead fs-6">{{ detail.event.summary }}</p>
+<h2 class="h5 mt-4">Source timeline</h2>
+<div class="table-responsive border rounded"><table class="table table-hover mb-0"><thead><tr><th>Time</th><th>Source</th><th>Article</th><th>Match</th></tr></thead><tbody>{% for item in detail.items %}<tr><td>{{ item.published_at or item.fetched_at }}</td><td>{{ item.source_name }} <span class="text-secondary">({{ item.source_priority }})</span></td><td><a href="{{ item.canonical_url }}" target="_blank" rel="noreferrer">{{ item.title }}</a></td><td>{{ item.match_reason }}</td></tr>{% endfor %}</tbody></table></div>
+{% if detail.signal %}
+<h2 class="h5 mt-4">Signal context</h2>
+<div class="table-responsive border rounded"><table class="table mb-0"><tbody>
+  <tr><th>Signal</th><td>{{ detail.signal.token or detail.signal.narrative }}</td><th>Action</th><td>{{ detail.signal.action }}</td></tr>
+  <tr><th>Watchlists</th><td>{{ detail.signal.watchlists|map(attribute='name')|join(', ') or 'None' }}</td><th>Rules</th><td>{{ detail.signal.triggered_rules|map(attribute='rule_name')|join(', ') or 'None' }}</td></tr>
+  <tr><th>Outcomes</th><td>{{ detail.signal.outcomes|length }}</td><th>AI analysis</th><td>{{ detail.signal.ai_analysis.summary if detail.signal.ai_analysis else 'Not generated' }}</td></tr>
+</tbody></table></div>
+{% endif %}
+{% endblock %}

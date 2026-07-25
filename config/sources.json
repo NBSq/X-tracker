@@ -1,0 +1,32 @@
+[
+  {
+    "id": "coindesk",
+    "name": "CoinDesk",
+    "type": "rss",
+    "url": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "enabled": true,
+    "priority": 9,
+    "categories": ["crypto", "market"],
+    "fetch_interval_seconds": 300
+  },
+  {
+    "id": "decrypt",
+    "name": "Decrypt",
+    "type": "rss",
+    "url": "https://decrypt.co/feed",
+    "enabled": true,
+    "priority": 7,
+    "categories": ["crypto", "technology"],
+    "fetch_interval_seconds": 300
+  },
+  {
+    "id": "cointelegraph-bitcoin",
+    "name": "Cointelegraph Bitcoin",
+    "type": "rss",
+    "url": "https://cointelegraph.com/rss/tag/bitcoin",
+    "enabled": true,
+    "priority": 7,
+    "categories": ["bitcoin", "market"],
+    "fetch_interval_seconds": 300
+  }
+]

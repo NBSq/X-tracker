@@ -9,7 +9,8 @@ The project supports real APIs, public RSS feeds, and a fully local mock-AI work
 ## Highlights
 
 - Monitor configured X accounts through an X API v2-compatible client
-- Ingest crypto news from configurable RSS and Atom feeds
+- Ingest crypto news from configurable RSS, Atom, generic feed, and local JSON sources
+- Canonicalize URLs and merge exact or near-duplicate reporting into unified events
 - Analyze content with OpenAI structured outputs or deterministic mock AI
 - Add evidence-grounded OpenAI reasoning to qualified signals with safe fallback
 - Extract tokens, narratives, sentiment, importance, and summaries
@@ -34,9 +35,14 @@ The dashboard presents system health, latest signals, evaluated accuracy, moment
 flowchart LR
     X["X API v2"] --> Sources["Source Clients"]
     RSS["RSS / Atom Feeds"] --> Sources
+    JSON["Local JSON Fixtures"] --> Sources
     Local["Local Sample Posts"] --> Sources
 
-    Sources --> Posts["Shared Post Model"]
+    Sources --> Normalize["Normalized Content Items"]
+    JSON --> Sources
+    Normalize --> Dedupe["Exact + Near Deduplication"]
+    Dedupe --> Events["Unified Events"]
+    Events --> Posts["Shared Post Model"]
     Sources -->|RSSFetched| Bus["Internal Event Bus"]
     Posts --> Analyzer{"Analyzer"}
     Analyzer --> OpenAI["OpenAI Structured Output"]
@@ -100,6 +106,13 @@ The application uses a synchronous, typed, in-process event bus with no external
 | `AIAnalysisCompleted` | Structured reasoning is persisted | AI-aware rules and the original Telegram alert |
 | `AIAnalysisFailed` | OpenAI fails after bounded retries | Operational observability |
 | `AIAnalysisFallbackUsed` | Deterministic fallback replaces OpenAI | Operational observability |
+| `ContentFetched` | A configured source fetch completes | Source telemetry and health |
+| `ContentAccepted` | A unique normalized item is retained | Unified-event creation |
+| `ContentDeduplicated` | Exact or near duplicate evidence is linked | Deduplication audit surfaces |
+| `UnifiedEventCreated` | First evidence creates a canonical event | Future API and dashboard adapters |
+| `UnifiedEventUpdated` | Supporting evidence is added | Event metrics and timelines |
+| `UnifiedEventMateriallyChanged` | Coverage, score, or conflicts cross configured thresholds | Telegram update notifications |
+| `SourceFetchFailed` / `SourceRecovered` | Source health changes | Thresholded Telegram health alerts |
 
 The bus is intentionally transport-neutral. Future Dashboard, REST API, websocket, or audit-log adapters can subscribe without changing scoring and analysis code. Existing public helpers remain callable without supplying a bus; they create and register the default subscribers automatically.
 
@@ -432,6 +445,45 @@ Example workflow: create `Main Portfolio`, add BTC, ETH, and SOL, create a smart
 
 ## Source Modes
 
+### Multi-source ingestion
+
+RSS mode now reads `config/sources.json`. Each entry has a stable `id`, display `name`, `type` (`rss`, `atom`, `feed`, or `local_json`), URL/path, enabled state, `0-10` priority, categories, and fetch interval. Invalid entries are logged and skipped without disabling healthy sources.
+
+```json
+[
+  {
+    "id": "coindesk",
+    "name": "CoinDesk",
+    "type": "rss",
+    "url": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "enabled": true,
+    "priority": 8,
+    "categories": ["crypto", "markets"],
+    "fetch_interval_seconds": 300
+  }
+]
+```
+
+Every item is normalized to a typed internal model, with canonical URL, title/body fingerprints, timestamps, source metadata, language, and detected entities. Exact matches use source IDs, canonical URLs, content hashes, and normalized titles. Near matches use configurable title/body similarity, a publication-time window, and shared crypto entities. Raw items and every duplicate decision remain queryable.
+
+Near-duplicate matching is intentionally heuristic. It can occasionally group distinct reports or keep two descriptions of the same event separate; conflict and review indicators help operators inspect uncertain groups. This phase does not resolve redirects, perform semantic vector search, or fact-check publisher claims.
+
+A unified event selects its primary article deterministically using source priority, content completeness, URL availability, publication time, and database ID. Supporting sources, conflicts, source/item counts, hype, momentum, confidence, and material revisions are stored independently. AI reasoning uses up to three supporting articles and keys its cache to the material event version.
+
+```powershell
+python -m app.main --list-sources
+python -m app.main --source-status
+python -m app.main --fetch-source coindesk
+python -m app.main --disable-source coindesk
+python -m app.main --enable-source coindesk
+python -m app.main --list-unified-events
+python -m app.main --show-unified-event 42
+python -m app.main --deduplication-report
+python -m app.main --rebuild-unified-events
+```
+
+`--rebuild-unified-events` is idempotent: already-associated content is left in place. Existing SQLite databases are migrated automatically; no reset is required.
+
 ### Local Mode
 
 Local mode requires no X or OpenAI credentials:
@@ -450,7 +502,7 @@ python -m app.main --mode local --no-telegram
 
 ### RSS Mode
 
-RSS mode reads public feeds from `data/rss_feeds.json`. By default it performs one fetch-and-analysis run, then exits:
+RSS mode reads enabled public feeds from `config/sources.json`. By default it performs one fetch, deduplication, and analysis run, then exits:
 
 ```powershell
 python -m app.main --mode rss --mock-ai
@@ -651,6 +703,10 @@ Export stored data without starting X, RSS, OpenAI, or Telegram integrations:
 python -m app.main --export-signals-csv
 python -m app.main --export-outcomes-csv
 python -m app.main --export-performance-csv
+python -m app.main --export-sources-csv
+python -m app.main --export-content-items-csv
+python -m app.main --export-unified-events-csv
+python -m app.main --export-deduplication-report-csv
 python -m app.main --export-history-csv --period 30d
 python -m app.main --export-watchlists-csv
 python -m app.main --export-watchlist-signals-csv "Main Portfolio"
@@ -694,6 +750,18 @@ Performance export creates one overall summary row plus a separate narrative-lev
 `--export-watchlists-csv` writes watchlist definitions, typed settings, counts, performance, and a separate item file. `--export-watchlist-signals-csv` writes one watchlist's matching signal associations and supports the existing `--from-date`, `--to-date`, and `--output-dir` options.
 
 CSV files use deterministic column ordering, standard CSV quoting, ISO 8601 timestamps, and UTF-8 with a byte-order mark for Microsoft Excel compatibility. Numeric values do not include display symbols such as `%`, `+`, or `/100`.
+
+## Source And Event Dashboard
+
+Run `python -m app.main --dashboard`, then open:
+
+- `/sources` for enablement, health, latency, failures, and retained content
+- `/sources/{id}` for source detail and recent deduplication decisions
+- `/unified-events` for source coverage, primary evidence, hype, momentum, and review status
+- `/unified-events/{id}` for the supporting-source timeline and detected conflicts
+- `/deduplication` for reduction metrics and top duplicate sources
+
+REST integrations can use `GET/POST /api/sources`, `GET/PUT/DELETE /api/sources/{id}`, `POST /api/sources/{id}/fetch`, `POST /api/sources/{id}/enable`, `POST /api/sources/{id}/disable`, `GET /api/unified-events`, `GET /api/unified-events/{id}`, `GET /api/unified-events/{id}/items`, `GET /api/unified-events/{id}/history`, `GET /api/deduplication/stats`, and `POST /api/deduplication/rebuild`. Source deletion is refused while retained content references it.
 
 ## Telegram Examples
 
@@ -785,6 +853,7 @@ Tests cover:
 - CSV headers, encoding, escaping, date filters, aggregate exports, and CLI behavior
 - Smart-rule validation, nested logic, persistence, event handling, actions, CLI, and REST CRUD
 - Watchlist normalization, matching, thresholds, events, reports, Telegram aggregation, dashboard/API CRUD, filters, and CSV exports
+- Multi-source normalization, exact/near deduplication, unified events, source health, event-bus publication, migration, dashboard/API, and CSV exports
 
 ## Contributing
 
@@ -828,7 +897,8 @@ pytest
 - [x] Add period-aware historical analytics and detail views
 - [x] Add configurable smart alert rules
 - [x] Add configurable token and narrative watchlists
-- [ ] Add source-level reliability and influence weighting
+- [x] Add source-level reliability and influence weighting
+- [x] Add multi-source smart deduplication and unified-event timelines
 - [ ] Add semantic clustering for emerging narratives
 - [ ] Add richer interactive charts and momentum sparklines
 - [ ] Add PostgreSQL support for larger deployments

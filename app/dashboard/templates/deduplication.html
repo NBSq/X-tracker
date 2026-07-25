@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Deduplication{% endblock %}
+{% block heading %}Deduplication{% endblock %}
+{% block content %}
+<div class="row g-3 mb-4">
+  <div class="col-sm-3"><div class="metric-panel"><span class="metric-label">Raw items</span><strong>{{ deduplication.raw_items }}</strong></div></div>
+  <div class="col-sm-3"><div class="metric-panel"><span class="metric-label">Unified events</span><strong>{{ deduplication.unified_events }}</strong></div></div>
+  <div class="col-sm-3"><div class="metric-panel"><span class="metric-label">Reduction</span><strong>{{ deduplication.duplicate_reduction_percent }}%</strong></div></div>
+  <div class="col-sm-3"><div class="metric-panel"><span class="metric-label">Avg sources/event</span><strong>{{ '%.1f'|format(deduplication.average_sources) }}</strong></div></div>
+</div>
+<h2 class="h5">Decisions</h2>
+<div class="table-responsive border rounded mb-4"><table class="table mb-0"><tbody><tr><th>Accepted</th><td>{{ deduplication.accepted_items }}</td></tr><tr><th>Exact duplicates</th><td>{{ deduplication.exact_duplicates }}</td></tr><tr><th>Near duplicates</th><td>{{ deduplication.near_duplicates }}</td></tr><tr><th>Largest event</th><td>{{ deduplication.maximum_sources }} sources</td></tr></tbody></table></div>
+<h2 class="h5">Top duplicate sources</h2>
+<ol class="list-group list-group-numbered">{% for source in deduplication.top_duplicate_sources %}<li class="list-group-item d-flex justify-content-between"><span>{{ source.name }}</span><strong>{{ source.duplicate_count }}</strong></li>{% else %}<li class="list-group-item text-secondary">No duplicate sources in this period.</li>{% endfor %}</ol>
+{% endblock %}

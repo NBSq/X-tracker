@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 from app.ai.base import SignalAnalysisUnavailable
 from app.ai.service import SignalReasoningService, result_from_row
@@ -14,6 +15,9 @@ from app.events.models import (
     SignalCreated,
     SignalEvaluated,
     WatchlistMatched,
+    SourceFetchFailed,
+    SourceRecovered,
+    UnifiedEventMateriallyChanged,
 )
 from app.rules.engine import RuleEngine
 from app.watchlists.service import WatchlistService
@@ -45,7 +49,23 @@ class SignalPerformanceTracker:
         self.event_bus = event_bus
 
     def __call__(self, event: SignalCreated) -> None:
-        self.db.save_signal_history(**event.history_record())
+        record = event.history_record()
+        unified_event = self.db.find_unified_event_for_signal(
+            event.token,
+            event.narrative,
+        )
+        if isinstance(unified_event, (sqlite3.Row, dict)):
+            record["unified_event_id"] = int(unified_event["id"])
+        self.db.save_signal_history(**record)
+        if isinstance(unified_event, (sqlite3.Row, dict)):
+            self.db.update_unified_event(
+                int(unified_event["id"]),
+                hype_score=max(float(unified_event["hype_score"]), event.hype_score),
+                momentum_score=max(
+                    float(unified_event["momentum_score"]), event.momentum_score
+                ),
+                confidence=max(int(unified_event["confidence"]), event.confidence),
+            )
         self.event_bus.publish(_performance_updated(self.db))
 
 
@@ -140,7 +160,20 @@ class TelegramSignalNotifier:
                 if isinstance(analysis_row, sqlite3.Row)
                 else None
             )
-            if watchlist_names and analysis is not None:
+            unified_event = (
+                self.db.get_signal_unified_event(signal_id)
+                if signal_id is not None
+                else None
+            )
+            if isinstance(self.telegram, TelegramAlerter) and unified_event is not None:
+                self.telegram.send_hype_alert(
+                    event.alert,
+                    watchlist_names,
+                    analysis,
+                    unified_event,
+                    self.db.get_unified_event_items(int(unified_event["id"])),
+                )
+            elif watchlist_names and analysis is not None:
                 self.telegram.send_hype_alert(event.alert, watchlist_names, analysis)
             elif watchlist_names:
                 self.telegram.send_hype_alert(event.alert, watchlist_names)
@@ -174,6 +207,69 @@ class SignalReasoningSubscriber:
             logger.exception("Signal reasoning failed for signal %s", signal_id)
 
 
+class UnifiedEventTelegramNotifier:
+    def __init__(self, db: Database, telegram: TelegramAlerter) -> None:
+        self.db = db
+        self.telegram = telegram
+
+    def __call__(self, event: UnifiedEventMateriallyChanged) -> None:
+        row = self.db.get_unified_event(event.unified_event_id)
+        if row is None:
+            return
+        self.telegram.send_unified_event_update(
+            row,
+            self.db.get_unified_event_items(event.unified_event_id),
+            event.reason,
+        )
+
+
+class SourceHealthTelegramNotifier:
+    def __init__(
+        self,
+        db: Database,
+        telegram: TelegramAlerter,
+        failure_threshold: int,
+        cooldown_minutes: int,
+    ) -> None:
+        self.db = db
+        self.telegram = telegram
+        self.failure_threshold = failure_threshold
+        self.cooldown_minutes = cooldown_minutes
+
+    def failed(self, event: SourceFetchFailed) -> None:
+        if event.consecutive_failures < self.failure_threshold:
+            return
+        source = self.db.get_content_source(event.source_id)
+        if source is None:
+            return
+        last_alert = source["last_failure_alert_at"]
+        if last_alert:
+            try:
+                sent_at = datetime.fromisoformat(
+                    str(last_alert).replace("Z", "+00:00")
+                )
+                if sent_at.tzinfo is None:
+                    sent_at = sent_at.replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) < sent_at + timedelta(
+                    minutes=self.cooldown_minutes
+                ):
+                    return
+            except ValueError:
+                pass
+        self.telegram.send_source_health_alert(
+            event.source_key,
+            f"{event.error_type}; {event.consecutive_failures} consecutive failures",
+        )
+        self.db.mark_source_failure_alert(event.source_id)
+
+    def recovered(self, event: SourceRecovered) -> None:
+        self.telegram.send_source_health_alert(
+            event.source_key,
+            "fetching successfully again",
+            recovered=True,
+        )
+
+
 class AIRuleEvaluationSubscriber:
     def __init__(self, db: Database, telegram: TelegramAlerter | None) -> None:
         self.engine = RuleEngine(db, telegram, rule_scope="ai")
@@ -187,6 +283,7 @@ def register_default_subscribers(
     db: Database,
     telegram: TelegramAlerter | None,
     reasoning: SignalReasoningService | None = None,
+    config=None,
 ) -> None:
     event_bus.subscribe(SignalCreated, SignalPerformanceTracker(db, event_bus))
     event_bus.subscribe(SignalCreated, WatchlistSignalMatcher(db, event_bus))
@@ -196,6 +293,19 @@ def register_default_subscribers(
         event_bus.subscribe(SignalCreated, SignalReasoningSubscriber(db, reasoning))
     if telegram is not None:
         event_bus.subscribe(SignalCreated, TelegramSignalNotifier(db, telegram))
+        event_bus.subscribe(
+            UnifiedEventMateriallyChanged,
+            UnifiedEventTelegramNotifier(db, telegram),
+        )
+        if config is not None:
+            health = SourceHealthTelegramNotifier(
+                db,
+                telegram,
+                config.source_alert_after_failures,
+                config.source_failure_alert_cooldown_minutes,
+            )
+            event_bus.subscribe(SourceFetchFailed, health.failed)
+            event_bus.subscribe(SourceRecovered, health.recovered)
     event_bus.subscribe(SignalCreated, SignalDatabaseStorage(db))
     event_bus.subscribe(SignalEvaluated, SignalOutcomeStorage(db, event_bus))
 

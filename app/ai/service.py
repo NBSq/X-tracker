@@ -124,6 +124,25 @@ class SignalReasoningService:
         watchlists = self.db.get_signal_watchlist_context(signal_id)
         rule_matches = self.db.get_rule_matches(signal_id)
         outcomes = self.db.get_entity_recent_outcomes(own_token, own_narrative)
+        unified_event = self.db.get_signal_unified_event(signal_id)
+        event_items = (
+            self.db.get_unified_event_items(int(unified_event["id"]))
+            if unified_event is not None
+            else []
+        )
+        event_evidence = tuple(
+            SourceEvidence(
+                post_id=str(item["external_id"]),
+                source=str(item["source_name"]),
+                text=f"{item['title']}. {item['body']}"[:2500],
+            )
+            for item in event_items[:3]
+        )
+        conflicts = (
+            tuple(_json_strings(unified_event["detected_conflicts_json"]))
+            if unified_event is not None
+            else ()
+        )
         return SignalAnalysisContext(
             signal_id=signal_id,
             signal_type=str(signal["signal_type"]),
@@ -133,7 +152,7 @@ class SignalReasoningService:
             momentum_score=float(signal["momentum_score"]),
             mention_count=int(signal["mentions_count"] or 0),
             confidence=int(signal["confidence"]),
-            recent_posts=tuple(
+            recent_posts=event_evidence or tuple(
                 SourceEvidence(
                     post_id=str(post["post_id"]),
                     source=str(post["username"]),
@@ -141,7 +160,11 @@ class SignalReasoningService:
                 )
                 for post in posts
             ),
-            source_names=tuple(_unique(str(post["username"]) for post in posts)),
+            source_names=(
+                tuple(_unique(str(item["source_name"]) for item in event_items))
+                if event_items
+                else tuple(_unique(str(post["username"]) for post in posts))
+            ),
             watchlist_matches=tuple(str(item) for item in watchlists["names"]),
             triggered_rules=tuple(str(row["rule_name"]) for row in rule_matches),
             high_priority_rule=any(bool(row["high_priority"]) for row in rule_matches),
@@ -166,6 +189,18 @@ class SignalReasoningService:
             ),
             related_tokens=related_tokens,
             related_narratives=related_narratives,
+            unified_event_id=(int(unified_event["id"]) if unified_event else None),
+            unified_event_version=(
+                int(unified_event["material_version"]) if unified_event else 0
+            ),
+            source_count=int(unified_event["source_count"]) if unified_event else 0,
+            item_count=int(unified_event["item_count"]) if unified_event else 0,
+            publication_timeline=tuple(
+                str(item["published_at"] or item["fetched_at"])
+                for item in reversed(event_items)
+            ),
+            detected_conflicts=conflicts,
+            requires_review=bool(unified_event["requires_review"]) if unified_event else False,
         )
 
     def status(self) -> dict[str, object]:
@@ -403,6 +438,17 @@ def result_from_row(row) -> SignalAnalysisResult:
 def _cache_key(context: SignalAnalysisContext, model: str) -> str:
     context_data = context.model_dump(mode="json")
     context_data.pop("signal_id", None)
+    if context.unified_event_id is not None:
+        context_data = {
+            "unified_event_id": context.unified_event_id,
+            "unified_event_version": context.unified_event_version,
+            "signal_type": context.signal_type,
+            "token": context.token,
+            "narrative": context.narrative,
+            "hype_score": context.hype_score,
+            "momentum_score": context.momentum_score,
+            "confidence": context.confidence,
+        }
     payload = {
         "model": model,
         "prompt_version": PROMPT_VERSION,

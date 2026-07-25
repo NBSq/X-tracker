@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}{{ detail.source.name }}{% endblock %}
+{% block heading %}{{ detail.source.name }}{% endblock %}
+{% block content %}
+<div class="row g-3 mb-4">
+  <div class="col-sm-3"><div class="metric-panel"><span class="metric-label">Priority</span><strong>{{ detail.source.priority }}/10</strong></div></div>
+  <div class="col-sm-3"><div class="metric-panel"><span class="metric-label">Successful fetches</span><strong>{{ detail.source.successful_fetches }}</strong></div></div>
+  <div class="col-sm-3"><div class="metric-panel"><span class="metric-label">Failed fetches</span><strong>{{ detail.source.failed_fetches }}</strong></div></div>
+  <div class="col-sm-3"><div class="metric-panel"><span class="metric-label">Items retained</span><strong>{{ detail.items|length }}</strong></div></div>
+</div>
+<h2 class="h5 mb-3">Recent content</h2>
+<div class="table-responsive border rounded"><table class="table table-hover mb-0"><thead><tr><th>Published</th><th>Title</th><th>Decision</th><th>Event</th></tr></thead><tbody>
+{% for item in detail.items %}<tr><td class="text-nowrap">{{ item.published_at or item.fetched_at }}</td><td><a href="{{ item.canonical_url }}" target="_blank" rel="noreferrer">{{ item.title }}</a></td><td>{{ item.status }}</td><td>{% if item.unified_event_id %}<a href="/unified-events/{{ item.unified_event_id }}">#{{ item.unified_event_id }}</a>{% else %}-{% endif %}</td></tr>{% else %}<tr><td colspan="4" class="text-center text-secondary py-4">No fetched content.</td></tr>{% endfor %}
+</tbody></table></div>
+{% endblock %}
