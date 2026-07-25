@@ -12,6 +12,7 @@ from app.rules.models import (
     RuleEvaluation,
     RuleValidationError,
     SignalFacts,
+    condition_uses_ai,
     evaluate_condition,
     normalize_actions,
     validate_condition,
@@ -118,10 +119,12 @@ class RuleEngine:
         self,
         db: Database,
         telegram: TelegramAlerter | None = None,
+        rule_scope: str = "all",
     ) -> None:
         self.db = db
         self.telegram = telegram
         self.rules = RuleService(db)
+        self.rule_scope = rule_scope
 
     def __call__(self, event: SignalCreated) -> None:
         enabled_rules = self.rules.list_rules(enabled=True)
@@ -131,25 +134,51 @@ class RuleEngine:
         if signal_id is None:
             logger.warning("Rule evaluation skipped: signal history row was not found")
             return
+        self.evaluate_saved_signal(signal_id)
+
+    def evaluate_saved_signal(self, signal_id: int) -> None:
+        enabled_rules = self.rules.list_rules(enabled=True)
+        if not enabled_rules:
+            return
+        signal = self.db.get_signal(signal_id)
+        if signal is None:
+            return
         success_rate = self.db.get_entity_outcome_success_rate(
-            event.token,
-            event.narrative,
+            signal["token"],
+            signal["narrative"],
         )
         watchlist_context = self.db.get_signal_watchlist_context(signal_id)
+        analysis = self.db.get_signal_ai_analysis(signal_id)
         facts = SignalFacts(
-            token=event.token,
-            narrative=event.narrative,
-            hype_score=event.hype_score,
-            momentum_score=event.momentum_score,
-            confidence=event.confidence,
-            mentions=event.mentions_count,
+            token=signal["token"],
+            narrative=signal["narrative"],
+            hype_score=float(signal["hype_score"]),
+            momentum_score=float(signal["momentum_score"]),
+            confidence=int(signal["confidence"]),
+            mentions=int(signal["mentions_count"] or 0),
             outcome_success_rate=success_rate,
             watchlists=tuple(watchlist_context["names"]),
             watchlist_ids=tuple(watchlist_context["ids"]),
             watchlist_priority=int(watchlist_context["highest_priority"]),
             matched_watchlist=bool(watchlist_context["matched_any"]),
+            ai_action=str(analysis["action"]) if analysis is not None else None,
+            ai_confidence=int(analysis["confidence"]) if analysis is not None else 0,
+            ai_risk_level=(
+                str(analysis["risk_level"]) if analysis is not None else None
+            ),
+            openai_analysis_available=(
+                analysis is not None and str(analysis["provider"]) == "openai"
+            ),
+            ai_fallback_used=(
+                bool(analysis["fallback_used"]) if analysis is not None else False
+            ),
         )
         for rule in enabled_rules:
+            uses_ai = condition_uses_ai(rule.condition)
+            if self.rule_scope == "non_ai" and uses_ai:
+                continue
+            if self.rule_scope == "ai" and not uses_ai:
+                continue
             if not evaluate_condition(rule.condition, facts):
                 continue
             created = self.db.save_rule_match(signal_id, rule.id, rule.actions)

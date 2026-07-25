@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from app.scoring.hype_score import normalize_hype_score
 
 if TYPE_CHECKING:
+    from app.ai.models import SignalAnalysisResult
     from app.alerts.telegram import HypeAlert
     from app.sources.x_client import XPost
 
@@ -150,3 +151,30 @@ class NarrativeDetected:
         importance: int,
     ) -> "NarrativeDetected":
         return cls(post_id, narrative, importance, datetime.now(timezone.utc))
+
+
+@dataclass(frozen=True)
+class AIAnalysisRequested:
+    signal_id: int
+    provider: str
+    requested_at: datetime
+
+
+@dataclass(frozen=True)
+class AIAnalysisCompleted:
+    signal_id: int
+    result: SignalAnalysisResult
+
+
+@dataclass(frozen=True)
+class AIAnalysisFailed:
+    signal_id: int
+    provider: str
+    error_type: str
+    message: str
+
+
+@dataclass(frozen=True)
+class AIAnalysisFallbackUsed:
+    signal_id: int
+    reason: str

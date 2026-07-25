@@ -18,6 +18,11 @@ RULE_FIELDS = frozenset(
         "watchlist_id",
         "watchlist_priority",
         "matched_watchlist",
+        "ai_action",
+        "ai_confidence",
+        "ai_risk_level",
+        "openai_analysis_available",
+        "ai_fallback_used",
     }
 )
 ALERT_ACTIONS = frozenset(
@@ -49,8 +54,21 @@ _ACTION_ALIASES = {
     "digest": "include_in_digest",
     "csv": "csv_export_marker",
 }
-_TEXT_FIELDS = frozenset({"token", "narrative", "watchlist"})
-_BOOLEAN_FIELDS = frozenset({"matched_watchlist"})
+AI_RULE_FIELDS = frozenset(
+    {
+        "ai_action",
+        "ai_confidence",
+        "ai_risk_level",
+        "openai_analysis_available",
+        "ai_fallback_used",
+    }
+)
+_TEXT_FIELDS = frozenset(
+    {"token", "narrative", "watchlist", "ai_action", "ai_risk_level"}
+)
+_BOOLEAN_FIELDS = frozenset(
+    {"matched_watchlist", "openai_analysis_available", "ai_fallback_used"}
+)
 
 
 class RuleValidationError(ValueError):
@@ -70,6 +88,11 @@ class SignalFacts:
     watchlist_ids: tuple[int, ...] = ()
     watchlist_priority: int = 0
     matched_watchlist: bool = False
+    ai_action: str | None = None
+    ai_confidence: int = 0
+    ai_risk_level: str | None = None
+    openai_analysis_available: bool = False
+    ai_fallback_used: bool = False
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "SignalFacts":
@@ -101,6 +124,13 @@ class SignalFacts:
                 _number(value.get("watchlist_priority", 0), "watchlist_priority")
             ),
             matched_watchlist=bool(value.get("matched_watchlist", False)),
+            ai_action=_optional_text(value.get("ai_action")),
+            ai_confidence=int(_number(value.get("ai_confidence", 0), "ai_confidence")),
+            ai_risk_level=_optional_text(value.get("ai_risk_level")),
+            openai_analysis_available=bool(
+                value.get("openai_analysis_available", False)
+            ),
+            ai_fallback_used=bool(value.get("ai_fallback_used", False)),
         )
 
     def value_for(self, field: str) -> Any:
@@ -265,6 +295,18 @@ def evaluate_condition(condition: dict[str, Any], facts: SignalFacts) -> bool:
     if field in _TEXT_FIELDS:
         return _compare_text(actual, operator, expected)
     return _compare_number(actual, operator, expected)
+
+
+def condition_uses_ai(condition: dict[str, Any]) -> bool:
+    key = next(iter(condition), None)
+    if key is None:
+        return False
+    logical = str(key).upper()
+    if logical in {"AND", "OR"}:
+        return any(condition_uses_ai(item) for item in condition[key])
+    if logical == "NOT":
+        return condition_uses_ai(condition[key])
+    return str(condition.get("field", "")).strip().lower() in AI_RULE_FIELDS
 
 
 def _compare_text(actual: Any, operator: str, expected: Any) -> bool:

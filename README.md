@@ -11,6 +11,7 @@ The project supports real APIs, public RSS feeds, and a fully local mock-AI work
 - Monitor configured X accounts through an X API v2-compatible client
 - Ingest crypto news from configurable RSS and Atom feeds
 - Analyze content with OpenAI structured outputs or deterministic mock AI
+- Add evidence-grounded OpenAI reasoning to qualified signals with safe fallback
 - Extract tokens, narratives, sentiment, importance, and summaries
 - Calculate hype scores and 0-100 Narrative Momentum scores
 - Track narrative history, growth, recency, and importance in SQLite
@@ -53,6 +54,9 @@ flowchart LR
     DB --> Dashboard["FastAPI Dashboard"]
 
     Hype -->|SignalCreated| Bus
+    Bus --> Reasoning["Signal Reasoning Service"]
+    Reasoning -->|AIAnalysisCompleted| Bus
+    Reasoning --> AICache[("AI Cache / Usage Audit")]
     Outcomes -->|SignalEvaluated| Bus
     Bus --> Storage["Database Subscriber"]
     Bus --> Performance["Performance Subscriber"]
@@ -92,6 +96,10 @@ The application uses a synchronous, typed, in-process event bus with no external
 | `SignalEvaluationRequested` | A configured evaluation window becomes eligible for processing | Outcome evaluator observability and future workers |
 | `SignalEvaluated` | The outcomes engine evaluates a mature signal | SQLite outcome storage, performance updates |
 | `PerformanceUpdated` | Signal or outcome performance changes | Extension point for dashboards and REST APIs |
+| `AIAnalysisRequested` | A saved signal qualifies for reasoning | Usage observability and future workers |
+| `AIAnalysisCompleted` | Structured reasoning is persisted | AI-aware rules and the original Telegram alert |
+| `AIAnalysisFailed` | OpenAI fails after bounded retries | Operational observability |
+| `AIAnalysisFallbackUsed` | Deterministic fallback replaces OpenAI | Operational observability |
 
 The bus is intentionally transport-neutral. Future Dashboard, REST API, websocket, or audit-log adapters can subscribe without changing scoring and analysis code. Existing public helpers remain callable without supplying a bus; they create and register the default subscribers automatically.
 
@@ -141,6 +149,12 @@ app/
   config.py
   analytics/historical.py
   ai/analyzer.py
+  ai/base.py
+  ai/factory.py
+  ai/models.py
+  ai/mock_analyzer.py
+  ai/openai_analyzer.py
+  ai/service.py
   alerts/telegram.py
   db/database.py
   dashboard/app.py
@@ -215,9 +229,61 @@ OUTCOME_SUCCESS_THRESHOLD=10
 OUTCOME_FAILURE_THRESHOLD=-10
 HISTORY_GROWTH_THRESHOLD=20
 HISTORY_MINIMUM_ACTIVITY=2
+AI_PROVIDER=mock
+OPENAI_TIMEOUT_SECONDS=30
+OPENAI_MAX_RETRIES=1
+OPENAI_MAX_OUTPUT_TOKENS=700
+OPENAI_MAX_POST_LENGTH=600
+OPENAI_MIN_HYPE_SCORE=65
+OPENAI_MIN_MOMENTUM_SCORE=50
+OPENAI_MIN_CONFIDENCE=6
+OPENAI_DAILY_REQUEST_LIMIT=100
+OPENAI_CACHE_TTL_HOURS=24
+OPENAI_FALLBACK_TO_MOCK=true
+OPENAI_STORE_RESPONSES=false
 ```
 
 When Telegram credentials are missing, the application continues normally and logs reports to the console.
+
+## OpenAI Signal Reasoning
+
+Signal reasoning is a second-stage analysis of a saved hype signal. It uses the signal's token and narrative, normalized hype and momentum, mention count, tracker confidence, up to three deduplicated source excerpts, watchlist matches, rule matches, related entities, and recent outcome history. The result is stored separately from the original post classification:
+
+- Summary and why the signal matters
+- Action: `ignore`, `monitor`, `research`, or `high_priority_research`
+- Confidence from 1 to 10 and risk level
+- Supporting factors, risk factors, market context, and invalidation conditions
+- Related tokens and narratives
+
+Provider modes:
+
+| `AI_PROVIDER` | Behavior |
+| --- | --- |
+| `mock` | Always use deterministic local reasoning. OpenAI is never called. This is the default. |
+| `openai` | Use OpenAI for eligible signals; use mock fallback when configured. |
+| `auto` | Use OpenAI when a key is available and the signal qualifies, otherwise use mock. |
+
+OpenAI eligibility requires all three configured minimums: hype, momentum, and tracker confidence. A watchlist match or a high-priority rule overrides those minimums. `--analyze-signal ID` is a manual override. `--mock-ai` also forces signal reasoning to remain local.
+
+Evaluation order is deterministic: save the signal, associate enabled watchlists, evaluate non-AI rules, apply watchlist/high-priority overrides, check the three minimum thresholds, select the configured provider, check persisted results and cache, enforce the UTC daily limit, run bounded provider attempts, persist the result, evaluate AI-aware rules, then construct the single Telegram alert.
+
+```powershell
+python -m app.main --ai-status
+python -m app.main --analyze-signal 42
+python -m app.main --clear-ai-cache
+```
+
+The integration uses the official OpenAI Python SDK and Responses structured outputs validated by typed Pydantic models. Transient rate-limit, timeout, and network failures receive bounded retries. Authentication and invalid-output failures do not retry indefinitely. The local daily request limit counts non-cached OpenAI attempts, and deterministic cache keys include the model, prompt version, and normalized evidence context.
+
+Create an API key in the OpenAI platform, place it only in your local `.env` as `OPENAI_API_KEY`, and set `AI_PROVIDER=openai` or `auto`. Never commit `.env`, paste keys into rules or source posts, or expose them through dashboard configuration. The request threshold, cache TTL, maximum excerpt length, output limit, and daily cap help control usage. The daily cap is a local guardrail rather than a provider billing control; monitor provider usage separately and choose `mock` during development and CI.
+
+The API exposes `GET /api/ai/status`, `GET /api/ai/usage`, `GET /api/ai/analyses`, and `GET` or `POST /api/signals/{id}/analysis`. The dashboard adds an AI usage page and an AI reasoning section on signal details. Smart rules may use `ai_action`, `ai_confidence`, `ai_risk_level`, `openai_analysis_available`, and `ai_fallback_used` after analysis completes.
+
+### Privacy And Safety
+
+Source excerpts are treated as untrusted quoted data. The system prompt explicitly rejects instructions found in posts, forbids invented prices, partnerships, announcements, and market facts, and frames outputs as research rather than financial advice. Inputs are bounded to three short excerpts. The usage audit stores provider, model, timing, sizes, cache/fallback state, token counts when available, and sanitized error types; it does not store API keys, authorization headers, raw prompts, or full provider responses. `OPENAI_STORE_RESPONSES` defaults to `false`.
+
+The reasoning measures evidence and narrative continuation in tracker data. It does not predict token prices or establish profitability. Mock fallback is deterministic and useful for continuity, but it is not equivalent to language-model judgment.
 
 ## Quick Start
 

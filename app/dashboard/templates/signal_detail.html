@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Signal {{ signal.id }}{% endblock %}
+{% block heading %}{{ signal.token or signal.narrative or ('Signal ' ~ signal.id) }}{% endblock %}
+{% block content %}
+<div class="detail-toolbar mb-4"><a href="/signals">Back to signals</a></div>
+<section class="metric-grid mb-5">
+  <div class="metric-card accent"><span>Hype</span><strong>{{ signal.hype_score|int }}/100</strong></div>
+  <div class="metric-card"><span>Momentum</span><strong>{{ signal.momentum_score|int }}</strong></div>
+  <div class="metric-card"><span>Confidence</span><strong>{{ signal.confidence }}/10</strong></div>
+  <div class="metric-card"><span>Outcome</span><strong>{{ signal.outcome_status or 'Pending' }}</strong></div>
+</section>
+<section class="dashboard-section">
+  <div class="section-heading"><h2>AI reasoning</h2><span class="section-meta">Stored analysis</span></div>
+  {% set ai = signal.ai_analysis %}
+  {% if ai %}<div class="reasoning-panel">
+    <div class="reasoning-lead"><span class="action action-{{ ai.action }}">{{ ai.action }}</span><span class="risk-level">Risk: {{ ai.risk_level }}</span><span>AI confidence {{ ai.confidence }}/10</span></div>
+    <h3>{{ ai.summary }}</h3><p>{{ ai.why_it_matters }}</p>
+    <div class="reasoning-grid"><div><h4>Supporting factors</h4><ul>{% for item in ai.supporting_factors %}<li>{{ item }}</li>{% endfor %}</ul></div><div><h4>Risks</h4><ul>{% for item in ai.risk_factors %}<li>{{ item }}</li>{% endfor %}</ul></div></div>
+    <h4>Invalidation conditions</h4><ul>{% for item in ai.invalidation_conditions %}<li>{{ item }}</li>{% endfor %}</ul>
+    <p class="section-meta mb-0">{{ ai.provider }} / {{ ai.model }}{% if ai.fallback_used %} / fallback{% endif %}</p>
+  </div>{% else %}<div class="empty-state border">No signal reasoning has been stored yet.</div>{% endif %}
+</section>
+{% endblock %}

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from app.ai.analyzer import AnalysisResult
 from app.sources.x_client import XPost
@@ -163,6 +165,58 @@ class Database:
                 UNIQUE (signal_id, watchlist_id, matched_item_type, matched_item_value)
             );
 
+            CREATE TABLE IF NOT EXISTS ai_analysis_cache (
+                cache_key TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                prompt_version TEXT NOT NULL,
+                result_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                signal_id INTEGER,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                success INTEGER NOT NULL CHECK(success IN (0, 1)),
+                fallback_used INTEGER NOT NULL DEFAULT 0 CHECK(fallback_used IN (0, 1)),
+                cached INTEGER NOT NULL DEFAULT 0 CHECK(cached IN (0, 1)),
+                input_size_estimate INTEGER NOT NULL DEFAULT 0,
+                output_size_estimate INTEGER NOT NULL DEFAULT 0,
+                latency_ms INTEGER NOT NULL DEFAULT 0,
+                error_type TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                FOREIGN KEY (signal_id) REFERENCES signal_history(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS signal_ai_analyses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id INTEGER NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                prompt_version TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                why_it_matters TEXT NOT NULL,
+                action TEXT NOT NULL,
+                confidence INTEGER NOT NULL,
+                risk_level TEXT NOT NULL,
+                supporting_factors_json TEXT NOT NULL,
+                risk_factors_json TEXT NOT NULL,
+                related_tokens_json TEXT NOT NULL,
+                related_narratives_json TEXT NOT NULL,
+                market_context TEXT NOT NULL,
+                invalidation_conditions_json TEXT NOT NULL,
+                cached INTEGER NOT NULL DEFAULT 0 CHECK(cached IN (0, 1)),
+                fallback_used INTEGER NOT NULL DEFAULT 0 CHECK(fallback_used IN (0, 1)),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (signal_id) REFERENCES signal_history(id),
+                UNIQUE (signal_id, provider, model, prompt_version)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_signal_outcomes_signal_id
             ON signal_outcomes(signal_id);
 
@@ -195,6 +249,12 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_signal_watchlists_signal
             ON signal_watchlists(signal_id);
+
+            CREATE INDEX IF NOT EXISTS idx_ai_usage_requested_at
+            ON ai_usage(requested_at);
+
+            CREATE INDEX IF NOT EXISTS idx_signal_ai_analyses_signal
+            ON signal_ai_analyses(signal_id, created_at DESC);
             """
         )
         self._add_column_if_missing("signal_history", "mentions_count", "INTEGER")
@@ -267,6 +327,9 @@ class Database:
         )
 
     def reset(self) -> None:
+        self.connection.execute("DELETE FROM signal_ai_analyses")
+        self.connection.execute("DELETE FROM ai_usage")
+        self.connection.execute("DELETE FROM ai_analysis_cache")
         self.connection.execute("DELETE FROM signal_watchlists")
         self.connection.execute("DELETE FROM signal_rule_matches")
         self.connection.execute("DELETE FROM signal_outcomes")
@@ -279,6 +342,231 @@ class Database:
             "UPDATE alert_rules SET last_triggered = NULL, trigger_count = 0"
         )
         self.connection.commit()
+
+    def get_signal(self, signal_id: int) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM signal_history WHERE id = ?",
+            (signal_id,),
+        ).fetchone()
+
+    def get_ai_cache(self, cache_key: str) -> sqlite3.Row | None:
+        return self.connection.execute(
+            """
+            SELECT * FROM ai_analysis_cache
+            WHERE cache_key = ? AND datetime(expires_at) > CURRENT_TIMESTAMP
+            """,
+            (cache_key,),
+        ).fetchone()
+
+    def save_ai_cache(
+        self,
+        cache_key: str,
+        provider: str,
+        model: str,
+        prompt_version: str,
+        result: dict[str, Any],
+        expires_at: str,
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO ai_analysis_cache (
+                cache_key, provider, model, prompt_version, result_json, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(cache_key) DO UPDATE SET
+                provider = excluded.provider,
+                model = excluded.model,
+                prompt_version = excluded.prompt_version,
+                result_json = excluded.result_json,
+                created_at = CURRENT_TIMESTAMP,
+                expires_at = excluded.expires_at
+            """,
+            (
+                cache_key,
+                provider,
+                model,
+                prompt_version,
+                json.dumps(result, separators=(",", ":"), ensure_ascii=False),
+                expires_at,
+            ),
+        )
+        self.connection.commit()
+
+    def clear_ai_cache(self) -> int:
+        cursor = self.connection.execute("DELETE FROM ai_analysis_cache")
+        self.connection.commit()
+        return int(cursor.rowcount)
+
+    def get_active_ai_cache_count(self) -> int:
+        row = self.connection.execute(
+            """
+            SELECT COUNT(*) FROM ai_analysis_cache
+            WHERE datetime(expires_at) > CURRENT_TIMESTAMP
+            """
+        ).fetchone()
+        return int(row[0])
+
+    def save_ai_usage(
+        self,
+        *,
+        signal_id: int | None,
+        provider: str,
+        model: str,
+        success: bool,
+        fallback_used: bool = False,
+        cached: bool = False,
+        input_size_estimate: int = 0,
+        output_size_estimate: int = 0,
+        latency_ms: int = 0,
+        error_type: str | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+    ) -> int:
+        cursor = self.connection.execute(
+            """
+            INSERT INTO ai_usage (
+                signal_id, provider, model, success, fallback_used, cached,
+                input_size_estimate, output_size_estimate, latency_ms, error_type,
+                input_tokens, output_tokens
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                signal_id,
+                provider,
+                model,
+                int(success),
+                int(fallback_used),
+                int(cached),
+                input_size_estimate,
+                output_size_estimate,
+                latency_ms,
+                error_type,
+                input_tokens,
+                output_tokens,
+            ),
+        )
+        self.connection.commit()
+        return int(cursor.lastrowid)
+
+    def count_openai_requests_today(self) -> int:
+        row = self.connection.execute(
+            """
+            SELECT COUNT(*) FROM ai_usage
+            WHERE provider = 'openai'
+              AND cached = 0
+              AND requested_at >= datetime('now', 'start of day')
+              AND COALESCE(error_type, '') != 'local_daily_limit'
+            """
+        ).fetchone()
+        return int(row[0])
+
+    def get_ai_usage(self, limit: int = 100) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            "SELECT * FROM ai_usage ORDER BY requested_at DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    def get_ai_usage_summary(self) -> sqlite3.Row:
+        return self.connection.execute(
+            """
+            SELECT
+                COUNT(*) AS requests,
+                SUM(success) AS successful,
+                SUM(fallback_used) AS fallbacks,
+                SUM(cached) AS cache_hits,
+                AVG(latency_ms) AS average_latency_ms,
+                SUM(COALESCE(input_tokens, 0)) AS input_tokens,
+                SUM(COALESCE(output_tokens, 0)) AS output_tokens
+            FROM ai_usage
+            """
+        ).fetchone()
+
+    def save_signal_ai_analysis(
+        self,
+        signal_id: int,
+        result: dict[str, Any],
+    ) -> int | None:
+        cursor = self.connection.execute(
+            """
+            INSERT OR IGNORE INTO signal_ai_analyses (
+                signal_id, provider, model, prompt_version, summary,
+                why_it_matters, action, confidence, risk_level,
+                supporting_factors_json, risk_factors_json, related_tokens_json,
+                related_narratives_json, market_context,
+                invalidation_conditions_json, cached, fallback_used, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                signal_id,
+                result["provider"],
+                result["model"],
+                result["prompt_version"],
+                result["summary"],
+                result["why_it_matters"],
+                result["action"],
+                result["confidence"],
+                result["risk_level"],
+                json.dumps(result["supporting_factors"], ensure_ascii=False),
+                json.dumps(result["risk_factors"], ensure_ascii=False),
+                json.dumps(result["related_tokens"], ensure_ascii=False),
+                json.dumps(result["related_narratives"], ensure_ascii=False),
+                result["market_context"],
+                json.dumps(result["invalidation_conditions"], ensure_ascii=False),
+                int(bool(result.get("cached"))),
+                int(bool(result.get("fallback_used"))),
+                result.get("generated_at")
+                or datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        self.connection.commit()
+        return int(cursor.lastrowid) if cursor.rowcount else None
+
+    def get_signal_ai_analysis(
+        self,
+        signal_id: int,
+        provider: str | None = None,
+    ) -> sqlite3.Row | None:
+        provider_filter = "AND provider = ?" if provider else ""
+        parameters: tuple[object, ...] = (signal_id, provider) if provider else (signal_id,)
+        return self.connection.execute(
+            f"""
+            SELECT * FROM signal_ai_analyses
+            WHERE signal_id = ? {provider_filter}
+            ORDER BY created_at DESC, id DESC LIMIT 1
+            """,
+            parameters,
+        ).fetchone()
+
+    def get_signal_ai_analyses(
+        self,
+        limit: int = 100,
+        provider: str | None = None,
+    ) -> list[sqlite3.Row]:
+        provider_filter = "WHERE analysis.provider = ?" if provider else ""
+        parameters: list[object] = [provider] if provider else []
+        parameters.append(limit)
+        return self.connection.execute(
+            f"""
+            SELECT analysis.*, signal.token, signal.narrative,
+                   signal.hype_score, signal.momentum_score
+            FROM signal_ai_analyses AS analysis
+            JOIN signal_history AS signal ON signal.id = analysis.signal_id
+            {provider_filter}
+            ORDER BY analysis.created_at DESC, analysis.id DESC LIMIT ?
+            """,
+            parameters,
+        ).fetchall()
+
+    def get_ai_analysis_distribution(self, field: str) -> list[sqlite3.Row]:
+        if field not in {"provider", "model", "action", "risk_level"}:
+            raise ValueError(f"Unsupported AI distribution field: {field}")
+        return self.connection.execute(
+            f"""
+            SELECT {field} AS name, COUNT(*) AS count
+            FROM signal_ai_analyses
+            GROUP BY {field}
+            ORDER BY count DESC, {field}
+            """
+        ).fetchall()
 
     def has_post(self, post_id: str) -> bool:
         row = self.connection.execute(
@@ -810,6 +1098,27 @@ class Database:
         evaluated = int(row["evaluated_count"] or 0)
         successful = int(row["successful_count"] or 0)
         return successful / evaluated * 100.0 if evaluated else 0.0
+
+    def get_entity_recent_outcomes(
+        self,
+        token: str | None,
+        narrative: str | None,
+        limit: int = 5,
+    ) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT outcome.*
+            FROM signal_outcomes AS outcome
+            JOIN signal_history AS signal ON signal.id = outcome.signal_id
+            WHERE
+                (? IS NOT NULL AND signal.token = ? COLLATE NOCASE)
+                OR
+                (? IS NOT NULL AND signal.narrative = ? COLLATE NOCASE)
+            ORDER BY outcome.evaluated_at DESC, outcome.id DESC
+            LIMIT ?
+            """,
+            (token, token, narrative, narrative, limit),
+        ).fetchall()
 
     def get_rule_flagged_signals(
         self,

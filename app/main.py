@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Protocol
 
 from app.ai.analyzer import AnalysisResult, LocalAnalyzer, OpenAIAnalyzer, SpikeInsight
+from app.ai.factory import create_signal_reasoning_service
 from app.analytics.historical import (
     HistoricalAnalyticsService,
     HistoricalThresholds,
@@ -43,8 +44,14 @@ from app.alerts.telegram import (
 )
 from app.config import Config, load_config
 from app.db.database import Database
-from app.events import EventBus, NarrativeDetected, RSSFetched, SignalCreated
-from app.events.subscribers import register_default_subscribers
+from app.events import (
+    AIAnalysisCompleted,
+    EventBus,
+    NarrativeDetected,
+    RSSFetched,
+    SignalCreated,
+)
+from app.events.subscribers import AIRuleEvaluationSubscriber, register_default_subscribers
 from app.export.csv_exporter import CSVExportResult, CSVExportService
 from app.scoring.hype_score import (
     HypeCandidate,
@@ -255,6 +262,22 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=8000,
         help="Dashboard port",
+    )
+    parser.add_argument(
+        "--ai-status",
+        action="store_true",
+        help="Show signal reasoning provider, cache, fallback, and usage status",
+    )
+    parser.add_argument(
+        "--analyze-signal",
+        type=positive_int,
+        metavar="ID",
+        help="Run signal reasoning for a saved signal",
+    )
+    parser.add_argument(
+        "--clear-ai-cache",
+        action="store_true",
+        help="Clear cached OpenAI signal analyses",
     )
     parser.add_argument(
         "--list-rules",
@@ -651,8 +674,14 @@ def process_posts(
     db: Database,
     telegram: TelegramAlerter | None,
     event_bus: EventBus | None = None,
+    force_mock_ai: bool = False,
 ) -> None:
-    bus = event_bus or build_event_bus(db, telegram)
+    bus = event_bus or build_event_bus(
+        db,
+        telegram,
+        config,
+        force_mock_ai=force_mock_ai,
+    )
     logger.info("Loaded %d posts", len(posts))
     analyzed_count = 0
 
@@ -874,9 +903,22 @@ def build_signal_history_record(alert: HypeAlert) -> dict:
 def build_event_bus(
     db: Database,
     telegram: TelegramAlerter | None = None,
+    config: Config | None = None,
+    *,
+    force_mock_ai: bool = False,
 ) -> EventBus:
     event_bus = EventBus()
-    register_default_subscribers(event_bus, db, telegram)
+    reasoning = (
+        create_signal_reasoning_service(
+            db,
+            config,
+            event_bus=event_bus,
+            force_mock=force_mock_ai,
+        )
+        if config is not None
+        else None
+    )
+    register_default_subscribers(event_bus, db, telegram, reasoning)
     return event_bus
 
 
@@ -1322,7 +1364,12 @@ def build_analyzer(
     narratives: list[str],
     mock_ai: bool = False,
 ) -> Analyzer:
-    if mock_ai:
+    use_mock = mock_ai or config.ai_provider == "mock"
+    if config.ai_provider == "auto" and not config.openai_api_key:
+        use_mock = True
+    if not config.openai_api_key and config.openai_fallback_to_mock:
+        use_mock = True
+    if use_mock:
         logger.info("Mock AI enabled; OpenAI API will not be used")
         return LocalAnalyzer(narratives)
     if not config.openai_api_key:
@@ -1333,12 +1380,22 @@ def build_analyzer(
 def validate_live_config(config: Config, mock_ai: bool = False) -> None:
     if not config.x_bearer_token:
         raise RuntimeError("X_BEARER_TOKEN is required in live mode")
-    if not mock_ai and not config.openai_api_key:
+    if (
+        not mock_ai
+        and config.ai_provider == "openai"
+        and not config.openai_api_key
+        and not config.openai_fallback_to_mock
+    ):
         raise RuntimeError("OPENAI_API_KEY is required in live mode")
 
 
 def validate_rss_config(config: Config, mock_ai: bool = False) -> None:
-    if not mock_ai and not config.openai_api_key:
+    if (
+        not mock_ai
+        and config.ai_provider == "openai"
+        and not config.openai_api_key
+        and not config.openai_fallback_to_mock
+    ):
         raise RuntimeError("OPENAI_API_KEY is required in RSS mode")
 
 
@@ -1352,7 +1409,14 @@ def run_live_once(
     narratives = load_json_list(config.narratives_path, "narratives")
     posts = XClient(config.x_bearer_token).fetch_recent_posts(accounts, config.posts_per_account)
     analyzer = build_analyzer(config, narratives, mock_ai)
-    process_posts(posts, analyzer, config, db, build_telegram(config, no_telegram))
+    process_posts(
+        posts,
+        analyzer,
+        config,
+        db,
+        build_telegram(config, no_telegram),
+        force_mock_ai=mock_ai,
+    )
 
 
 def run_live(
@@ -1386,9 +1450,22 @@ def run_rss_once(
     posts = RSSClient().fetch_recent_posts(feeds, config.rss_articles_per_feed)
     analyzer = build_analyzer(config, narratives, mock_ai)
     telegram = build_telegram(config, no_telegram)
-    event_bus = build_event_bus(db, telegram)
+    event_bus = build_event_bus(
+        db,
+        telegram,
+        config,
+        force_mock_ai=mock_ai,
+    )
     event_bus.publish(RSSFetched.create(posts, len(feeds)))
-    process_posts(posts, analyzer, config, db, telegram, event_bus)
+    process_posts(
+        posts,
+        analyzer,
+        config,
+        db,
+        telegram,
+        event_bus,
+        force_mock_ai=mock_ai,
+    )
 
 
 def run_rss(
@@ -1421,7 +1498,7 @@ def run_dashboard(config: Config, host: str, port: int) -> None:
     from app.dashboard import create_app
 
     logger.info("Dashboard available at http://%s:%d", host, port)
-    uvicorn.run(create_app(config.database_path), host=host, port=port)
+    uvicorn.run(create_app(config.database_path, config=config), host=host, port=port)
 
 
 def main() -> None:
@@ -1455,6 +1532,30 @@ def main() -> None:
         raise SystemExit(1)
 
     try:
+        if args.clear_ai_cache:
+            removed = db.clear_ai_cache()
+            logger.info("AI cache cleared: %d entr%s", removed, "y" if removed == 1 else "ies")
+            return
+        if args.ai_status:
+            status = create_signal_reasoning_service(db, config).status()
+            logger.info("AI status\n%s", json.dumps(status, indent=2, sort_keys=True))
+            return
+        if args.analyze_signal:
+            ai_bus = EventBus()
+            ai_bus.subscribe(AIAnalysisCompleted, AIRuleEvaluationSubscriber(db, None))
+            result = create_signal_reasoning_service(
+                db,
+                config,
+                event_bus=ai_bus,
+            ).analyze_signal(
+                args.analyze_signal,
+                force=True,
+            )
+            logger.info(
+                "Signal AI analysis\n%s",
+                result.model_dump_json(indent=2),
+            )
+            return
         if requested_watchlist_command(args):
             run_watchlist_command(args, db)
             return

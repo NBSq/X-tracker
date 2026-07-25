@@ -10,7 +10,8 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 import sqlite3
 
-from app.config import load_config
+from app.ai.base import SignalAnalysisUnavailable
+from app.config import Config, load_config
 from app.analytics.historical import HistoricalThresholds
 from app.events import EventBus, NarrativeDetected, PerformanceUpdated, WatchlistMatched
 from app.dashboard.service import DashboardService
@@ -85,15 +86,17 @@ class DashboardEventState:
 def create_app(
     database_path: Path | None = None,
     event_bus: EventBus | None = None,
+    config: Config | None = None,
 ) -> FastAPI:
-    config = load_config()
-    path = database_path or config.database_path
+    app_config = config or load_config()
+    path = database_path or app_config.database_path
     service = DashboardService(
         path,
         HistoricalThresholds(
-            growth_percent=config.history_growth_threshold,
-            minimum_activity=config.history_minimum_activity,
+            growth_percent=app_config.history_growth_threshold,
+            minimum_activity=app_config.history_minimum_activity,
         ),
+        config=app_config,
     )
     event_state = DashboardEventState()
     if event_bus is not None:
@@ -165,6 +168,31 @@ def create_app(
             signals=service.signals(watchlist_id=watchlist_id),
             watchlists=service.watchlists(),
             selected_watchlist_id=watchlist_id,
+            status=service.status(),
+        )
+
+    @app.get("/signals/{signal_id}", response_class=HTMLResponse)
+    def signal_detail_page(request: Request, signal_id: int):
+        signal = service.signal_detail(signal_id)
+        if signal is None:
+            raise HTTPException(status_code=404, detail="Signal not found")
+        return render(
+            request,
+            "signal_detail.html",
+            "signals",
+            signal=signal,
+            status=service.status(),
+        )
+
+    @app.get("/ai", response_class=HTMLResponse)
+    def ai_page(request: Request):
+        return render(
+            request,
+            "ai.html",
+            "ai",
+            ai_status=service.ai_status(),
+            analyses=service.ai_analyses(50),
+            usage=service.ai_usage(50),
             status=service.status(),
         )
 
@@ -360,6 +388,36 @@ def create_app(
         watchlist_id: int | None = None,
     ):
         return {"signals": service.signals(limit, watchlist_id)}
+
+    @app.get("/api/ai/status")
+    def ai_status_api():
+        return service.ai_status()
+
+    @app.get("/api/ai/usage")
+    def ai_usage_api(limit: int = Query(default=100, ge=1, le=500)):
+        return {"usage": service.ai_usage(limit)}
+
+    @app.get("/api/ai/analyses")
+    def ai_analyses_api(
+        limit: int = Query(default=100, ge=1, le=500),
+        provider: str | None = Query(default=None, pattern="^(mock|openai)$"),
+    ):
+        return {"analyses": service.ai_analyses(limit, provider)}
+
+    @app.get("/api/signals/{signal_id}/analysis")
+    def signal_analysis_api(signal_id: int):
+        if service.signal_detail(signal_id) is None:
+            raise HTTPException(status_code=404, detail="Signal not found")
+        return {"signal_id": signal_id, "analysis": service.signal_analysis(signal_id)}
+
+    @app.post("/api/signals/{signal_id}/analysis")
+    def analyze_signal_api(signal_id: int):
+        if service.signal_detail(signal_id) is None:
+            raise HTTPException(status_code=404, detail="Signal not found")
+        try:
+            return {"signal_id": signal_id, "analysis": service.analyze_signal(signal_id)}
+        except SignalAnalysisUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.get("/api/performance")
     def performance_api():

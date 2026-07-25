@@ -13,6 +13,7 @@ from app.scoring.momentum_score import NarrativeMomentum
 from app.scoring.opportunity_score import NarrativeOpportunity
 
 if TYPE_CHECKING:
+    from app.ai.models import SignalAnalysisResult
     from app.rules.models import SignalFacts
     from app.watchlists.service import WatchlistService
 
@@ -151,12 +152,17 @@ class TelegramAlerter:
         self,
         alert: HypeAlert,
         watchlist_names: tuple[str, ...] = (),
+        ai_analysis: SignalAnalysisResult | None = None,
     ) -> None:
         response = requests.post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
             json={
                 "chat_id": self.chat_id,
-                "text": format_telegram_hype_alert(alert, watchlist_names),
+                "text": format_telegram_hype_alert(
+                    alert,
+                    watchlist_names,
+                    ai_analysis,
+                ),
                 "parse_mode": "HTML",
             },
             timeout=30,
@@ -368,38 +374,75 @@ def format_hype_alert(alert: HypeAlert) -> str:
 def format_telegram_hype_alert(
     alert: HypeAlert,
     watchlist_names: tuple[str, ...] = (),
+    ai_analysis: SignalAnalysisResult | None = None,
 ) -> str:
     posts = "\n".join(
-        f"{index}. @{escape(post.username)}: {escape(post.text[:300])}"
+        f"{index}. @{_safe_html(post.username, 50)}: {_safe_html(post.text, 180)}"
         for index, post in enumerate(alert.top_posts, start=1)
     )
-    tokens = ", ".join(escape(token) for token in alert.related_tokens) or "None"
-    narratives = ", ".join(escape(item) for item in alert.related_narratives) or "None"
+    tokens = ", ".join(
+        _safe_html(token, 30) for token in alert.related_tokens[:8]
+    ) or "None"
+    narratives = ", ".join(
+        _safe_html(item, 30) for item in alert.related_narratives[:8]
+    ) or "None"
     momentum = "\n".join(
-        f"{escape(item.name)} {item.score}" for item in alert.momentum
+        f"{_safe_html(item.name, 50)} {item.score}" for item in alert.momentum[:8]
     )
     watchlists = (
         "<b>Watchlists:</b> "
-        + ", ".join(escape(name) for name in watchlist_names)
+        + ", ".join(_safe_html(name, 40) for name in watchlist_names[:8])
         + "\n\n"
         if watchlist_names
         else ""
     )
-    return (
+    message = (
         "🚨 <b>Crypto Hype Spike</b>\n"
-        f"<b>Signal:</b> {escape(_alert_title(alert))}\n\n"
+        f"<b>Signal:</b> {_safe_html(_alert_title(alert), 120)}\n\n"
         f"{_html_signal_fields(alert)}"
         f"<b>Hype Score:</b> {_combined_display_hype_score(alert)}/100\n"
         f"{_html_components(alert)}"
         f"<b>Confidence:</b> {alert.insight.confidence}/10\n"
         f"<b>Action:</b> {escape(alert.insight.action)}\n\n"
         f"{watchlists}"
-        f"<b>Why it matters:</b>\n{escape(alert.insight.explanation)}\n\n"
+        f"<b>Why it matters:</b>\n{_safe_html(alert.insight.explanation, 400)}\n\n"
         f"<b>Top posts:</b>\n{posts or 'No posts available'}\n\n"
         "<b>Related:</b>\n"
         f"<b>Tokens:</b> {tokens}\n"
         f"<b>Narratives:</b> {narratives}"
         f"\n\n<b>Narrative Momentum:</b>\n{momentum or 'None'}"
+        f"{_format_ai_analysis(ai_analysis)}"
+    )
+    return message
+
+
+def _format_ai_analysis(ai_analysis: SignalAnalysisResult | None) -> str:
+    if ai_analysis is None:
+        return ""
+    action = getattr(ai_analysis.action, "value", ai_analysis.action)
+    risk = getattr(ai_analysis.risk_level, "value", ai_analysis.risk_level)
+    supports = "\n".join(
+        f"• {_safe_html(item, 90)}" for item in ai_analysis.supporting_factors[:2]
+    ) or "None"
+    risks = "\n".join(
+        f"• {_safe_html(item, 90)}" for item in ai_analysis.risk_factors[:2]
+    ) or "None"
+    invalidation = "\n".join(
+        f"• {_safe_html(item, 90)}"
+        for item in ai_analysis.invalidation_conditions[:2]
+    ) or "None"
+    mode = "fallback" if ai_analysis.fallback_used else ai_analysis.provider
+    return (
+        "\n\n<b>AI Signal Reasoning</b>\n"
+        f"<b>Summary:</b> {_safe_html(ai_analysis.summary, 200)}\n"
+        f"<b>Why:</b> {_safe_html(ai_analysis.why_it_matters, 300)}\n"
+        f"<b>Action:</b> {escape(str(action))}\n"
+        f"<b>AI confidence:</b> {ai_analysis.confidence}/10\n"
+        f"<b>Risk:</b> {escape(str(risk))}\n"
+        f"<b>Mode:</b> {escape(mode)}\n\n"
+        f"<b>Supporting factors:</b>\n{supports}\n\n"
+        f"<b>Risk factors:</b>\n{risks}\n\n"
+        f"<b>Invalidation:</b>\n{invalidation}"
     )
 
 
@@ -484,15 +527,15 @@ def _html_signal_fields(alert: HypeAlert) -> str:
     if alert.merged_signal is None:
         return (
             f"<b>Type:</b> {escape(alert.signal.kind)}\n"
-            f"<b>Token/Narrative:</b> {escape(alert.signal.name)}\n"
+            f"<b>Token/Narrative:</b> {_safe_html(alert.signal.name, 80)}\n"
         )
     signals = [alert.signal, alert.merged_signal]
     token = next(item.name for item in signals if item.kind == "token")
     narrative = next(item.name for item in signals if item.kind == "narrative")
     return (
         "<b>Type:</b> token + narrative\n"
-        f"<b>Token:</b> {escape(token)}\n"
-        f"<b>Narrative:</b> {escape(narrative)}\n"
+        f"<b>Token:</b> {_safe_html(token, 80)}\n"
+        f"<b>Narrative:</b> {_safe_html(narrative, 80)}\n"
     )
 
 
@@ -516,7 +559,7 @@ def _html_components(alert: HypeAlert) -> str:
     return (
         "<b>Components:</b>\n"
         + "".join(
-            f"• {escape(item.name)}: {item.display_hype_score}/100\n"
+            f"• {_safe_html(item.name, 80)}: {item.display_hype_score}/100\n"
             for item in components
         )
     )
@@ -527,6 +570,18 @@ def _ordered_components(alert: HypeAlert) -> list[HypeSignal]:
     if alert.merged_signal is not None:
         components.append(alert.merged_signal)
     return sorted(components, key=lambda item: 0 if item.kind == "token" else 1)
+
+
+def _safe_html(value: object, max_length: int) -> str:
+    parts: list[str] = []
+    length = 0
+    for character in str(value):
+        escaped = escape(character)
+        if length + len(escaped) > max_length:
+            break
+        parts.append(escaped)
+        length += len(escaped)
+    return "".join(parts)
 
 
 def format_summary(summary: NarrativeSummary) -> str:

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 
+from app.ai.base import SignalAnalysisUnavailable
+from app.ai.service import SignalReasoningService, result_from_row
 from app.alerts.telegram import TelegramAlerter
 from app.db.database import Database
 from app.events.bus import EventBus
 from app.events.models import (
+    AIAnalysisCompleted,
     PerformanceUpdated,
     SignalCreated,
     SignalEvaluated,
@@ -126,8 +130,22 @@ class TelegramSignalNotifier:
                 if isinstance(rows, (list, tuple))
                 else ()
             )
-            if watchlist_names:
+            analysis_row = (
+                self.db.get_signal_ai_analysis(signal_id)
+                if signal_id is not None
+                else None
+            )
+            analysis = (
+                result_from_row(analysis_row)
+                if isinstance(analysis_row, sqlite3.Row)
+                else None
+            )
+            if watchlist_names and analysis is not None:
+                self.telegram.send_hype_alert(event.alert, watchlist_names, analysis)
+            elif watchlist_names:
                 self.telegram.send_hype_alert(event.alert, watchlist_names)
+            elif analysis is not None:
+                self.telegram.send_hype_alert(event.alert, ai_analysis=analysis)
             else:
                 self.telegram.send_hype_alert(event.alert)
             name = " + ".join(
@@ -138,14 +156,44 @@ class TelegramSignalNotifier:
             logger.exception("Telegram alert failed")
 
 
+class SignalReasoningSubscriber:
+    def __init__(self, db: Database, service: SignalReasoningService) -> None:
+        self.db = db
+        self.service = service
+
+    def __call__(self, event: SignalCreated) -> None:
+        signal_id = self.db.find_signal_history_id(event.history_record())
+        if signal_id is None:
+            logger.warning("Signal reasoning skipped: signal history row was not found")
+            return
+        try:
+            self.service.analyze_signal(signal_id)
+        except SignalAnalysisUnavailable as exc:
+            logger.warning("Signal reasoning unavailable: %s", exc)
+        except Exception:
+            logger.exception("Signal reasoning failed for signal %s", signal_id)
+
+
+class AIRuleEvaluationSubscriber:
+    def __init__(self, db: Database, telegram: TelegramAlerter | None) -> None:
+        self.engine = RuleEngine(db, telegram, rule_scope="ai")
+
+    def __call__(self, event: AIAnalysisCompleted) -> None:
+        self.engine.evaluate_saved_signal(event.signal_id)
+
+
 def register_default_subscribers(
     event_bus: EventBus,
     db: Database,
     telegram: TelegramAlerter | None,
+    reasoning: SignalReasoningService | None = None,
 ) -> None:
     event_bus.subscribe(SignalCreated, SignalPerformanceTracker(db, event_bus))
     event_bus.subscribe(SignalCreated, WatchlistSignalMatcher(db, event_bus))
-    event_bus.subscribe(SignalCreated, RuleEngine(db, telegram))
+    event_bus.subscribe(SignalCreated, RuleEngine(db, telegram, rule_scope="non_ai"))
+    if reasoning is not None:
+        event_bus.subscribe(AIAnalysisCompleted, AIRuleEvaluationSubscriber(db, telegram))
+        event_bus.subscribe(SignalCreated, SignalReasoningSubscriber(db, reasoning))
     if telegram is not None:
         event_bus.subscribe(SignalCreated, TelegramSignalNotifier(db, telegram))
     event_bus.subscribe(SignalCreated, SignalDatabaseStorage(db))

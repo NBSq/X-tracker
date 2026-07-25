@@ -5,7 +5,12 @@ from pathlib import Path
 from typing import Any
 
 from app.analytics.historical import HistoricalAnalyticsService, HistoricalThresholds
+from app.ai.factory import create_signal_reasoning_service
+from app.ai.service import result_from_row
+from app.config import Config, load_config
 from app.db.database import Database
+from app.events import AIAnalysisCompleted, EventBus
+from app.events.subscribers import AIRuleEvaluationSubscriber
 from app.scoring.hype_score import normalize_hype_score
 from app.rules import RuleService
 from app.watchlists import WatchlistService
@@ -16,9 +21,11 @@ class DashboardService:
         self,
         database_path: Path,
         history_thresholds: HistoricalThresholds | None = None,
+        config: Config | None = None,
     ) -> None:
         self.database_path = database_path
         self.history_thresholds = history_thresholds
+        self.config = config or load_config()
 
     def status(self) -> dict[str, Any]:
         db = self._database()
@@ -144,6 +151,84 @@ class DashboardService:
             "narratives": self.narratives(6),
             "tokens": self.tokens(6),
         }
+
+    def signal_detail(self, signal_id: int) -> dict[str, Any] | None:
+        signal = next(
+            (item for item in self.signals(200) if item["id"] == signal_id),
+            None,
+        )
+        if signal is None:
+            return None
+        signal["ai_analysis"] = self.signal_analysis(signal_id)
+        return signal
+
+    def ai_status(self) -> dict[str, Any]:
+        db = self._database()
+        try:
+            return create_signal_reasoning_service(db, self.config).status()
+        finally:
+            db.close()
+
+    def ai_usage(self, limit: int = 100) -> list[dict[str, Any]]:
+        db = self._database()
+        try:
+            return [dict(row) for row in db.get_ai_usage(limit)]
+        finally:
+            db.close()
+
+    def ai_analyses(
+        self,
+        limit: int = 100,
+        provider: str | None = None,
+    ) -> list[dict[str, Any]]:
+        db = self._database()
+        try:
+            return [
+                {
+                    **result_from_row(row).model_dump(mode="json"),
+                    "id": int(row["id"]),
+                    "signal_id": int(row["signal_id"]),
+                    "token": row["token"],
+                    "narrative": row["narrative"],
+                    "hype_score": float(row["hype_score"]),
+                    "momentum_score": float(row["momentum_score"]),
+                }
+                for row in db.get_signal_ai_analyses(limit, provider)
+            ]
+        finally:
+            db.close()
+
+    def signal_analysis(self, signal_id: int) -> dict[str, Any] | None:
+        db = self._database()
+        try:
+            row = db.get_signal_ai_analysis(signal_id)
+            return (
+                result_from_row(row).model_dump(mode="json")
+                if row is not None
+                else None
+            )
+        finally:
+            db.close()
+
+    def analyze_signal(self, signal_id: int) -> dict[str, Any]:
+        db = self._database()
+        try:
+            event_bus = EventBus()
+            event_bus.subscribe(
+                AIAnalysisCompleted,
+                AIRuleEvaluationSubscriber(db, None),
+            )
+            result = create_signal_reasoning_service(
+                db,
+                self.config,
+                event_bus=event_bus,
+            ).analyze_signal(
+                signal_id,
+                force=True,
+            )
+            return result.model_dump(mode="json")
+        finally:
+            db.close()
 
     def rules(self, enabled: bool | None = None) -> list[dict[str, Any]]:
         db = self._database()
@@ -559,7 +644,11 @@ class DashboardService:
 
     def _database(self) -> Database:
         db = Database(self.database_path)
-        if not db.has_table("alert_rules") or not db.has_table("watchlists"):
+        if (
+            not db.has_table("alert_rules")
+            or not db.has_table("watchlists")
+            or not db.has_table("signal_ai_analyses")
+        ):
             db.initialize()
         return db
 
