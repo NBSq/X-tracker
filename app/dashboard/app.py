@@ -93,6 +93,10 @@ class SourceUpdatePayload(BaseModel):
     fetch_interval_seconds: int | None = Field(default=None, ge=1)
 
 
+class GraphSnapshotPayload(BaseModel):
+    frequency: str = Field(pattern="^(daily|weekly|monthly)$")
+
+
 class DashboardEventState:
     def __init__(self) -> None:
         self.last_event_at: str | None = None
@@ -460,6 +464,45 @@ def create_app(
             deduplication=service.deduplication(), status=service.status(),
         )
 
+    @app.get("/graph", response_class=HTMLResponse)
+    def graph_page(request: Request):
+        return render(
+            request, "graph.html", "graph", watchlists=service.watchlists(),
+            status=service.status(), max_nodes=app_config.graph_max_nodes,
+        )
+
+    @app.get("/graph/emerging", response_class=HTMLResponse)
+    def graph_emerging_page(request: Request):
+        return render(
+            request, "graph_emerging.html", "graph_emerging",
+            relationships=service.graph_emerging(), status=service.status(),
+        )
+
+    @app.get("/graph/bridges", response_class=HTMLResponse)
+    def graph_bridges_page(request: Request):
+        return render(
+            request, "graph_bridges.html", "graph_bridges",
+            nodes=service.graph_bridges(), status=service.status(),
+        )
+
+    @app.get("/graph/analytics", response_class=HTMLResponse)
+    def graph_analytics_page(request: Request):
+        return render(
+            request, "graph_analytics.html", "graph_analytics",
+            summary=service.graph_summary(), snapshots=service.graph_snapshots(),
+            status=service.status(),
+        )
+
+    @app.get("/graph/nodes/{node_type}/{entity_id:path}", response_class=HTMLResponse)
+    def graph_node_page(request: Request, node_type: str, entity_id: str):
+        node = service.graph_node(node_type, entity_id)
+        if node is None:
+            raise HTTPException(status_code=404, detail="Graph node not found")
+        return render(
+            request, "graph_node.html", "graph", node=node,
+            status=service.status(),
+        )
+
     @app.get("/api/signals")
     def signals_api(
         limit: int = Query(default=50, ge=1, le=200),
@@ -815,6 +858,93 @@ def create_app(
             return {"processed": processed, "created": created}
         finally:
             db.close()
+
+    @app.get("/api/graph")
+    def graph_api(
+        period: int | None = Query(default=None, ge=1, le=3650),
+        node_type: str | None = None,
+        edge_type: str | None = None,
+        min_weight: float | None = Query(default=None, ge=0, le=1),
+        min_occurrences: int = Query(default=1, ge=1),
+        watchlist: int | None = Query(default=None, ge=1),
+        search: str | None = Query(default=None, max_length=120),
+        limit: int = Query(default=150, ge=1, le=500),
+    ):
+        try:
+            return service.graph(
+                period=period, node_type=node_type, edge_type=edge_type,
+                min_weight=min_weight, min_occurrences=min_occurrences,
+                watchlist_id=watchlist, search=search, limit=limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/graph/nodes")
+    def graph_nodes_api(
+        node_type: str | None = None,
+        min_weight: float | None = Query(default=None, ge=0, le=1),
+        limit: int = Query(default=100, ge=1, le=500),
+    ):
+        try:
+            return {"nodes": service.graph(
+                node_type=node_type, min_weight=min_weight, limit=limit
+            )["nodes"]}
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/graph/nodes/{node_type}/{entity_id:path}")
+    def graph_node_api(node_type: str, entity_id: str):
+        try:
+            node = service.graph_node(node_type, entity_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if node is None:
+            raise HTTPException(status_code=404, detail="Graph node not found")
+        return node
+
+    @app.get("/api/graph/edges")
+    def graph_edges_api(
+        edge_type: str | None = None,
+        min_weight: float | None = Query(default=None, ge=0, le=1),
+        min_occurrences: int = Query(default=1, ge=1),
+        limit: int = Query(default=250, ge=1, le=1000),
+    ):
+        try:
+            return {"edges": service.graph(
+                edge_type=edge_type, min_weight=min_weight,
+                min_occurrences=min_occurrences,
+                limit=min(limit, app_config.graph_max_nodes),
+            )["edges"][:limit]}
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/graph/summary")
+    def graph_summary_api(period: int | None = Query(default=None, ge=1, le=3650)):
+        return service.graph_summary(period)
+
+    @app.get("/api/graph/emerging")
+    def graph_emerging_api(limit: int = Query(default=25, ge=1, le=500)):
+        return {"relationships": service.graph_emerging(limit)}
+
+    @app.get("/api/graph/bridges")
+    def graph_bridges_api(limit: int = Query(default=25, ge=1, le=500)):
+        return {"nodes": service.graph_bridges(limit)}
+
+    @app.get("/api/graph/snapshots")
+    def graph_snapshots_api(limit: int = Query(default=100, ge=1, le=500)):
+        return {"snapshots": service.graph_snapshots(limit)}
+
+    @app.post("/api/graph/snapshots", status_code=status.HTTP_201_CREATED)
+    def create_graph_snapshot_api(payload: GraphSnapshotPayload):
+        return service.create_graph_snapshot(payload.frequency)
+
+    @app.post("/api/graph/rebuild")
+    def rebuild_graph_api():
+        return service.rebuild_graph()
+
+    @app.get("/api/graph/validate")
+    def validate_graph_api():
+        return service.validate_graph()
 
     return app
 

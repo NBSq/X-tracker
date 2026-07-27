@@ -17,9 +17,9 @@ body { background: var(--canvas); color: var(--ink); font-family: Inter, "Segoe 
 .app-shell { width: min(1180px, calc(100% - 32px)); margin-inline: auto; }
 .app-header { background: var(--surface); position: sticky; top: 0; z-index: 20; }
 .navbar { min-height: 62px; padding: 0; }
-.navbar-brand { display: flex; align-items: center; gap: 10px; color: var(--ink); font-size: 15px; font-weight: 700; }
+.navbar-brand { display: flex; align-items: center; gap: 9px; color: var(--ink); font-size: 14px; font-weight: 700; }
 .brand-mark { display: grid; place-items: center; width: 30px; height: 30px; background: var(--ink); color: #fff; border-radius: 5px; font-size: 11px; }
-.nav-link { color: var(--muted); font-size: 14px; padding: 20px 13px !important; border-bottom: 2px solid transparent; }
+.nav-link { color: var(--muted); font-size: 12px; padding: 20px 5px !important; border-bottom: 2px solid transparent; }
 .nav-link:hover, .nav-link.active { color: var(--ink); border-bottom-color: var(--teal); }
 .eyebrow { color: var(--teal); font-size: 11px; font-weight: 700; text-transform: uppercase; }
 .page-heading h1 { font-size: 26px; font-weight: 700; }
@@ -127,6 +127,29 @@ body { background: var(--canvas); color: var(--ink); font-family: Inter, "Segoe 
 .risk-level { padding-left: 12px; border-left: 1px solid var(--line); text-transform: capitalize; }
 .reasoning-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 36px; }
 .ai-distributions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 36px; }
+.graph-tabs { display: flex; gap: 20px; border-bottom: 1px solid var(--line); }
+.graph-tabs a { padding: 9px 0; color: var(--muted); font-size: 12px; font-weight: 700; text-decoration: none; }
+.graph-tabs a.active, .graph-tabs a:hover { color: var(--teal); border-bottom: 2px solid var(--teal); }
+.graph-filters { align-items: end; }
+.graph-filters label { min-width: 104px; }
+.graph-shell { display: grid; grid-template-columns: minmax(0, 1fr) 260px; min-height: 620px; border: 1px solid var(--line); background: var(--surface); }
+.graph-canvas { position: relative; min-width: 0; min-height: 620px; background: #f7faf9; }
+.graph-tooltip { position: absolute; z-index: 5; max-width: 260px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 4px; background: rgba(255, 255, 255, .96); box-shadow: 0 8px 24px rgba(24, 32, 31, .12); pointer-events: none; }
+.graph-tooltip strong, .graph-tooltip span { display: block; overflow-wrap: anywhere; }
+.graph-tooltip strong { margin-bottom: 4px; font-size: 12px; }
+.graph-tooltip span { color: var(--muted); font-size: 10px; line-height: 1.55; }
+.graph-selection { padding: 20px; border-left: 1px solid var(--line); }
+.graph-selection-head { margin-bottom: 18px; }
+.graph-selection-head strong, .graph-selection-head span { display: block; overflow-wrap: anywhere; }
+.graph-selection-head span { margin-top: 4px; color: var(--muted); font-size: 11px; text-transform: capitalize; }
+.graph-ranking { display: grid; gap: 0; border-top: 1px solid var(--line); }
+.graph-ranking > div { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 14px; align-items: center; padding: 13px 0; border-bottom: 1px solid var(--line); }
+.graph-ranking strong, .graph-ranking span { display: block; }
+.graph-ranking span { color: var(--muted); font-size: 11px; }
+.graph-ranking b { font-size: 13px; }
+.tag-list { display: flex; flex-wrap: wrap; gap: 7px; }
+.tag-list a { padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); font-size: 11px; text-decoration: none; }
+.tag-list a:hover { border-color: var(--teal); color: var(--teal); }
 
 @media (max-width: 767px) {
   .app-shell { width: min(100% - 24px, 1180px); }
@@ -151,4 +174,7 @@ body { background: var(--canvas); color: var(--ink); font-family: Inter, "Segoe 
   .watchlist-detail-grid { grid-template-columns: 1fr; gap: 28px; }
   .reasoning-grid { grid-template-columns: 1fr; gap: 8px; }
   .ai-distributions { grid-template-columns: 1fr; gap: 24px; }
+  .graph-shell { grid-template-columns: 1fr; min-height: 520px; }
+  .graph-canvas { min-height: 440px; }
+  .graph-selection { border-top: 1px solid var(--line); border-left: 0; }
 }

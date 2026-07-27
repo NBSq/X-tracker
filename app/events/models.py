@@ -242,3 +242,28 @@ class SourceFetchFailed:
 class SourceRecovered:
     source_id: int
     source_key: str
+
+
+@dataclass(frozen=True)
+class RuleTriggered:
+    rule_id: int
+    signal_id: int
+
+
+@dataclass(frozen=True)
+class GraphUpdated:
+    update_reason: str
+    node_count: int
+    edge_count: int
+
+
+@dataclass(frozen=True)
+class EmergingRelationshipDetected:
+    graph_edge_id: int
+    emerging_score: float
+
+
+@dataclass(frozen=True)
+class GraphSnapshotCreated:
+    snapshot_id: int
+    frequency: str

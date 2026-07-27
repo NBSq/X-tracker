@@ -336,6 +336,52 @@ class Database:
                 FOREIGN KEY (source_id) REFERENCES content_sources(id)
             );
 
+            CREATE TABLE IF NOT EXISTS graph_nodes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                label TEXT NOT NULL,
+                normalized_label TEXT NOT NULL,
+                weight REAL NOT NULL DEFAULT 0 CHECK(weight BETWEEN 0 AND 1),
+                activity_score REAL NOT NULL DEFAULT 0 CHECK(activity_score BETWEEN 0 AND 100),
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (node_type, entity_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS graph_edges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_node_id INTEGER NOT NULL,
+                target_node_id INTEGER NOT NULL,
+                edge_type TEXT NOT NULL,
+                derivation TEXT NOT NULL DEFAULT 'observed',
+                weight REAL NOT NULL DEFAULT 0 CHECK(weight BETWEEN 0 AND 1),
+                occurrence_count INTEGER NOT NULL DEFAULT 1 CHECK(occurrence_count > 0),
+                confidence REAL NOT NULL DEFAULT 1 CHECK(confidence BETWEEN 0 AND 1),
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (source_node_id) REFERENCES graph_nodes(id),
+                FOREIGN KEY (target_node_id) REFERENCES graph_nodes(id),
+                UNIQUE (source_node_id, target_node_id, edge_type, derivation)
+            );
+
+            CREATE TABLE IF NOT EXISTS graph_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                node_count INTEGER NOT NULL,
+                edge_count INTEGER NOT NULL,
+                metrics_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (period_start, period_end)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_signal_outcomes_signal_id
             ON signal_outcomes(signal_id);
 
@@ -395,6 +441,24 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_source_fetch_history_source
             ON source_fetch_history(source_id, fetched_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_graph_nodes_type_weight
+            ON graph_nodes(node_type, weight DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_graph_nodes_normalized_label
+            ON graph_nodes(normalized_label);
+
+            CREATE INDEX IF NOT EXISTS idx_graph_edges_type_weight
+            ON graph_edges(edge_type, weight DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_graph_edges_source
+            ON graph_edges(source_node_id);
+
+            CREATE INDEX IF NOT EXISTS idx_graph_edges_target
+            ON graph_edges(target_node_id);
+
+            CREATE INDEX IF NOT EXISTS idx_graph_snapshots_period
+            ON graph_snapshots(period_end DESC);
             """
         )
         self._add_column_if_missing("signal_history", "mentions_count", "INTEGER")
@@ -470,6 +534,9 @@ class Database:
         )
 
     def reset(self) -> None:
+        self.connection.execute("DELETE FROM graph_snapshots")
+        self.connection.execute("DELETE FROM graph_edges")
+        self.connection.execute("DELETE FROM graph_nodes")
         self.connection.execute("DELETE FROM unified_event_history")
         self.connection.execute("DELETE FROM unified_event_items")
         self.connection.execute("DELETE FROM unified_events")
@@ -1110,7 +1177,7 @@ class Database:
         return self.connection.execute(
             """
             SELECT item.*, source.source_key, source.name AS source_name,
-                   source.priority AS source_priority,
+                   source.source_type, source.priority AS source_priority,
                    association.similarity_score, association.match_reason,
                    association.added_at
             FROM unified_event_items AS association
@@ -2844,6 +2911,257 @@ class Database:
             ORDER BY snapshot.momentum_score DESC, snapshot.narrative
             """
         ).fetchall()
+
+    def clear_graph_projection(self) -> None:
+        self.connection.execute("DELETE FROM graph_edges")
+        self.connection.execute("DELETE FROM graph_nodes")
+        self.connection.commit()
+
+    def upsert_graph_node(
+        self,
+        *,
+        node_type: str,
+        entity_id: str,
+        label: str,
+        normalized_label: str,
+        weight: float,
+        activity_score: float,
+        first_seen_at: str,
+        last_seen_at: str,
+        metadata_json: str,
+    ) -> int:
+        self.connection.execute(
+            """
+            INSERT INTO graph_nodes (
+                node_type, entity_id, label, normalized_label, weight,
+                activity_score, first_seen_at, last_seen_at, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(node_type, entity_id) DO UPDATE SET
+                label = excluded.label,
+                normalized_label = excluded.normalized_label,
+                weight = MAX(graph_nodes.weight, excluded.weight),
+                activity_score = MAX(graph_nodes.activity_score, excluded.activity_score),
+                first_seen_at = MIN(graph_nodes.first_seen_at, excluded.first_seen_at),
+                last_seen_at = MAX(graph_nodes.last_seen_at, excluded.last_seen_at),
+                metadata_json = excluded.metadata_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                node_type, entity_id, label, normalized_label, weight,
+                activity_score, first_seen_at, last_seen_at, metadata_json,
+            ),
+        )
+        self.connection.commit()
+        row = self.get_graph_node(node_type, entity_id)
+        if row is None:
+            raise RuntimeError("Graph node could not be persisted")
+        return int(row["id"])
+
+    def get_graph_node(self, node_type: str, entity_id: str) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM graph_nodes WHERE node_type = ? AND entity_id = ?",
+            (node_type, entity_id),
+        ).fetchone()
+
+    def get_graph_node_by_id(self, node_id: int) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM graph_nodes WHERE id = ?", (node_id,)
+        ).fetchone()
+
+    def get_graph_nodes(
+        self,
+        node_type: str | None = None,
+        min_weight: float = 0.0,
+        limit: int | None = 500,
+    ) -> list[sqlite3.Row]:
+        conditions = ["weight >= ?"]
+        parameters: list[object] = [min_weight]
+        if node_type:
+            conditions.append("node_type = ?")
+            parameters.append(node_type)
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = "LIMIT ?"
+            parameters.append(limit)
+        return self.connection.execute(
+            f"""
+            SELECT * FROM graph_nodes WHERE {' AND '.join(conditions)}
+            ORDER BY weight DESC, activity_score DESC, label COLLATE NOCASE
+            {limit_clause}
+            """,
+            parameters,
+        ).fetchall()
+
+    def upsert_graph_edge(
+        self,
+        *,
+        source_node_id: int,
+        target_node_id: int,
+        edge_type: str,
+        derivation: str,
+        weight: float,
+        occurrence_increment: int,
+        confidence: float,
+        first_seen_at: str,
+        last_seen_at: str,
+        metadata_json: str,
+    ) -> int:
+        self.connection.execute(
+            """
+            INSERT INTO graph_edges (
+                source_node_id, target_node_id, edge_type, derivation, weight,
+                occurrence_count, confidence, first_seen_at, last_seen_at,
+                metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_node_id, target_node_id, edge_type, derivation)
+            DO UPDATE SET
+                weight = excluded.weight,
+                occurrence_count = graph_edges.occurrence_count + excluded.occurrence_count,
+                confidence = MAX(graph_edges.confidence, excluded.confidence),
+                first_seen_at = MIN(graph_edges.first_seen_at, excluded.first_seen_at),
+                last_seen_at = MAX(graph_edges.last_seen_at, excluded.last_seen_at),
+                metadata_json = excluded.metadata_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                source_node_id, target_node_id, edge_type, derivation, weight,
+                occurrence_increment, confidence, first_seen_at, last_seen_at,
+                metadata_json,
+            ),
+        )
+        self.connection.commit()
+        row = self.connection.execute(
+            """
+            SELECT id FROM graph_edges
+            WHERE source_node_id = ? AND target_node_id = ?
+              AND edge_type = ? AND derivation = ?
+            """,
+            (source_node_id, target_node_id, edge_type, derivation),
+        ).fetchone()
+        return int(row["id"])
+
+    def get_graph_edge(
+        self,
+        source_node_id: int,
+        target_node_id: int,
+        edge_type: str,
+        derivation: str = "observed",
+    ) -> sqlite3.Row | None:
+        return self.connection.execute(
+            """
+            SELECT * FROM graph_edges
+            WHERE source_node_id = ? AND target_node_id = ?
+              AND edge_type = ? AND derivation = ?
+            """,
+            (source_node_id, target_node_id, edge_type, derivation),
+        ).fetchone()
+
+    def update_graph_edge(
+        self,
+        edge_id: int,
+        *,
+        weight: float,
+        confidence: float,
+        last_seen_at: str,
+        metadata_json: str,
+    ) -> None:
+        self.connection.execute(
+            """
+            UPDATE graph_edges SET weight = ?, confidence = MAX(confidence, ?),
+                last_seen_at = MAX(last_seen_at, ?), metadata_json = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (weight, confidence, last_seen_at, metadata_json, edge_id),
+        )
+        self.connection.commit()
+
+    def get_graph_edges(
+        self,
+        edge_type: str | None = None,
+        min_weight: float = 0.0,
+        min_occurrences: int = 1,
+        node_id: int | None = None,
+        limit: int | None = 1000,
+    ) -> list[sqlite3.Row]:
+        conditions = ["edge.weight >= ?", "edge.occurrence_count >= ?"]
+        parameters: list[object] = [min_weight, min_occurrences]
+        if edge_type:
+            conditions.append("edge.edge_type = ?")
+            parameters.append(edge_type)
+        if node_id is not None:
+            conditions.append("(edge.source_node_id = ? OR edge.target_node_id = ?)")
+            parameters.extend((node_id, node_id))
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = "LIMIT ?"
+            parameters.append(limit)
+        return self.connection.execute(
+            f"""
+            SELECT edge.*,
+                   source.node_type AS source_type,
+                   source.entity_id AS source_entity_id,
+                   source.label AS source_label,
+                   target.node_type AS target_type,
+                   target.entity_id AS target_entity_id,
+                   target.label AS target_label
+            FROM graph_edges AS edge
+            JOIN graph_nodes AS source ON source.id = edge.source_node_id
+            JOIN graph_nodes AS target ON target.id = edge.target_node_id
+            WHERE {' AND '.join(conditions)}
+            ORDER BY edge.weight DESC, edge.occurrence_count DESC, edge.id
+            {limit_clause}
+            """,
+            parameters,
+        ).fetchall()
+
+    def save_graph_snapshot(
+        self,
+        period_start: str,
+        period_end: str,
+        node_count: int,
+        edge_count: int,
+        metrics_json: str,
+    ) -> tuple[int, bool]:
+        cursor = self.connection.execute(
+            """
+            INSERT OR IGNORE INTO graph_snapshots (
+                period_start, period_end, node_count, edge_count, metrics_json
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (period_start, period_end, node_count, edge_count, metrics_json),
+        )
+        self.connection.commit()
+        row = self.connection.execute(
+            """
+            SELECT id FROM graph_snapshots
+            WHERE period_start = ? AND period_end = ?
+            """,
+            (period_start, period_end),
+        ).fetchone()
+        return int(row["id"]), bool(cursor.rowcount)
+
+    def get_graph_snapshots(self, limit: int = 100) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT * FROM graph_snapshots
+            ORDER BY period_end DESC, id DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    def delete_orphan_graph_nodes(self) -> int:
+        cursor = self.connection.execute(
+            """
+            DELETE FROM graph_nodes
+            WHERE id NOT IN (
+                SELECT source_node_id FROM graph_edges
+                UNION SELECT target_node_id FROM graph_edges
+            )
+            """
+        )
+        self.connection.commit()
+        return int(cursor.rowcount)
 
     def get_dashboard_status(self) -> dict[str, object]:
         return {

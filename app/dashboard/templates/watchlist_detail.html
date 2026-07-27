@@ -38,6 +38,14 @@
   </section>
 </div>
 <section class="dashboard-section mt-5">
+  <div class="section-heading"><h2>Relationship context</h2><a href="/graph?watchlist={{ report.watchlist.id }}">Open graph</a></div>
+  <div class="history-chart-grid">
+    <div><h3>Connected tokens</h3><div class="tag-list">{% for item in report.graph.connected_tokens %}<a href="/graph/nodes/token/{{ item.entity_id }}">{{ item.label }}</a>{% else %}<span class="empty-state">No connected tokens.</span>{% endfor %}</div></div>
+    <div><h3>Connected narratives</h3><div class="tag-list">{% for item in report.graph.connected_narratives %}<a href="/graph/nodes/narrative/{{ item.entity_id }}">{{ item.label }}</a>{% else %}<span class="empty-state">No connected narratives.</span>{% endfor %}</div></div>
+  </div>
+  <div class="table-responsive mt-4"><table class="table mb-0"><thead><tr><th>Emerging relationship</th><th>Type</th><th>Score</th><th>Classification</th></tr></thead><tbody>{% for item in report.graph.emerging_relationships %}<tr><td>{{ item.source_label }} / {{ item.target_label }}</td><td>{{ item.edge_type|replace('_', ' ') }}</td><td>{{ '%.1f'|format(item.emerging_relationship_score) }}</td><td>{{ item.classification }}</td></tr>{% else %}<tr><td colspan="4" class="empty-state">No emerging relationships.</td></tr>{% endfor %}</tbody></table></div>
+</section>
+<section class="dashboard-section mt-5">
   <div class="section-heading"><h2>Latest matching signals</h2><a href="/signals?watchlist_id={{ report.watchlist.id }}">View all</a></div>
   <div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Signal</th><th>Hype</th><th>Momentum</th><th>Confidence</th><th>Outcome</th><th>Matched</th></tr></thead><tbody>{% for item in report.latest_matches %}<tr><td><strong>{{ item.token or item.narrative or 'Unknown' }}</strong><small>{{ item.narrative if item.token else '' }}</small></td><td>{{ item.hype_score }}</td><td>{{ item.momentum_score }}</td><td>{{ item.confidence }}/10</td><td>{{ item.outcome_status or 'Pending' }}</td><td>{{ item.matched_at }}</td></tr>{% else %}<tr><td colspan="6" class="empty-state">No signals matched yet.</td></tr>{% endfor %}</tbody></table></div>
 </section>

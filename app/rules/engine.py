@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import json
 import logging
 from collections.abc import Mapping
 from typing import Any
 
 from app.alerts.telegram import TelegramAlerter
 from app.db.database import Database
-from app.events.models import SignalCreated
+from app.events.bus import EventBus
+from app.events.models import RuleTriggered, SignalCreated
 from app.rules.models import (
     AlertRule,
     RuleEvaluation,
@@ -122,11 +124,13 @@ class RuleEngine:
         db: Database,
         telegram: TelegramAlerter | None = None,
         rule_scope: str = "all",
+        event_bus: EventBus | None = None,
     ) -> None:
         self.db = db
         self.telegram = telegram
         self.rules = RuleService(db)
         self.rule_scope = rule_scope
+        self.event_bus = event_bus
 
     def __call__(self, event: SignalCreated) -> None:
         enabled_rules = self.rules.list_rules(enabled=True)
@@ -151,6 +155,9 @@ class RuleEngine:
         )
         watchlist_context = self.db.get_signal_watchlist_context(signal_id)
         analysis = self.db.get_signal_ai_analysis(signal_id)
+        graph_metrics = _signal_graph_metrics(
+            self.db, signal["token"], signal["narrative"]
+        )
         unified_event = self.db.get_signal_unified_event(signal_id)
         event_age_minutes = 0.0
         if unified_event is not None:
@@ -205,6 +212,7 @@ class RuleEngine:
                 int(unified_event["conflict_count"]) if unified_event else 0
             ),
             requires_review=bool(unified_event["requires_review"]) if unified_event else False,
+            **graph_metrics,
         )
         for rule in enabled_rules:
             uses_ai = condition_uses_ai(rule.condition)
@@ -217,12 +225,47 @@ class RuleEngine:
             created = self.db.save_rule_match(signal_id, rule.id, rule.actions)
             if not created:
                 continue
+            if self.event_bus is not None:
+                self.event_bus.publish(RuleTriggered(rule.id, signal_id))
             logger.info("Smart alert rule matched: %s", rule.name)
             if "telegram" in rule.actions and self.telegram is not None:
                 try:
                     self.telegram.send_rule_alert(rule.name, rule.priority, facts)
                 except Exception:
                     logger.exception("Telegram smart rule alert failed for %s", rule.name)
+
+
+def _signal_graph_metrics(
+    db: Database,
+    token: str | None,
+    narrative: str | None,
+) -> dict[str, float | int]:
+    values: list[dict] = []
+    for node_type, entity_id in (("token", token), ("narrative", narrative)):
+        if not entity_id or not db.has_table("graph_nodes"):
+            continue
+        from app.graph.models import normalize_entity
+
+        canonical_id, _, _ = normalize_entity(node_type, entity_id)
+        row = db.get_graph_node(node_type, canonical_id)
+        if row is None:
+            continue
+        try:
+            values.append(json.loads(str(row["metadata_json"] or "{}")))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+    fields = {
+        "node_degree": 0,
+        "weighted_degree": 0.0,
+        "bridge_score": 0.0,
+        "emerging_relationship_score": 0.0,
+        "source_diversity": 0,
+        "connected_narrative_count": 0,
+        "connected_token_count": 0,
+    }
+    for field in fields:
+        fields[field] = max((item.get(field, 0) for item in values), default=0)
+    return fields
 
 
 def _rule_name(value: Any) -> str:

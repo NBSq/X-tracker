@@ -16,6 +16,7 @@ from app.rules import RuleService
 from app.watchlists import WatchlistService
 from app.ingestion.models import SourceDefinition
 from app.ingestion.service import MultiSourceIngestionService
+from app.graph.service import GraphService
 
 
 class DashboardService:
@@ -488,7 +489,37 @@ class DashboardService:
             watchlist = service.get_watchlist(identifier)
             if watchlist is None:
                 return None
-            return service.report(watchlist.id).as_dict()
+            report = service.report(watchlist.id).as_dict()
+            graph = GraphService(db, self.config)
+            graph_view = graph.graph_view(
+                watchlist_id=watchlist.id, min_weight=0,
+                limit=self.config.graph_max_nodes,
+            )
+            tracked = [
+                node for node in graph_view["nodes"]
+                if node["node_type"] in {"token", "narrative"}
+            ]
+            related_edges = []
+            recent_events = []
+            for node in tracked:
+                detail = graph.node_detail(node["node_type"], node["entity_id"])
+                if detail:
+                    related_edges.extend(detail["edges"])
+                    recent_events.extend(detail["recent_events"])
+            unique_edges = {item["id"]: item for item in related_edges}
+            report["graph"] = {
+                "connected_tokens": [item for item in tracked if item["node_type"] == "token"],
+                "connected_narratives": [item for item in tracked if item["node_type"] == "narrative"],
+                "recent_events": list({item["id"]: item for item in recent_events}.values())[:10],
+                "strongest_relationships": sorted(
+                    unique_edges.values(), key=lambda item: item["weight"], reverse=True
+                )[:10],
+                "emerging_relationships": sorted(
+                    unique_edges.values(),
+                    key=lambda item: item["emerging_relationship_score"], reverse=True,
+                )[:10],
+            }
+            return report
         finally:
             db.close()
 
@@ -804,12 +835,93 @@ class DashboardService:
             for row in db.get_signal_outcome_narratives(order)
         ]
 
+    def graph(
+        self,
+        *,
+        period: int | None = None,
+        node_type: str | None = None,
+        edge_type: str | None = None,
+        min_weight: float | None = None,
+        min_occurrences: int = 1,
+        watchlist_id: int | None = None,
+        search: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        db = self._database()
+        try:
+            return GraphService(db, self.config).graph_view(
+                period_days=period, node_type=node_type, edge_type=edge_type,
+                min_weight=min_weight, min_occurrences=min_occurrences,
+                watchlist_id=watchlist_id, search=search, limit=limit,
+            )
+        finally:
+            db.close()
+
+    def graph_node(self, node_type: str, entity_id: str) -> dict[str, Any] | None:
+        db = self._database()
+        try:
+            return GraphService(db, self.config).node_detail(node_type, entity_id)
+        finally:
+            db.close()
+
+    def graph_summary(self, period: int | None = None) -> dict[str, Any]:
+        db = self._database()
+        try:
+            return GraphService(db, self.config).summary(period)
+        finally:
+            db.close()
+
+    def graph_emerging(self, limit: int = 25) -> list[dict[str, Any]]:
+        db = self._database()
+        try:
+            return GraphService(db, self.config).emerging(limit)
+        finally:
+            db.close()
+
+    def graph_bridges(self, limit: int = 25) -> list[dict[str, Any]]:
+        db = self._database()
+        try:
+            return GraphService(db, self.config).bridges(limit)
+        finally:
+            db.close()
+
+    def graph_snapshots(self, limit: int = 100) -> list[dict[str, Any]]:
+        db = self._database()
+        try:
+            return GraphService(db, self.config).snapshots(limit)
+        finally:
+            db.close()
+
+    def create_graph_snapshot(self, frequency: str) -> dict[str, Any]:
+        db = self._database()
+        try:
+            snapshot, created = GraphService(db, self.config).create_snapshot(frequency)
+            return {"snapshot": snapshot.as_dict(), "created": created}
+        finally:
+            db.close()
+
+    def rebuild_graph(self) -> dict[str, int]:
+        db = self._database()
+        try:
+            return GraphService(db, self.config).rebuild()
+        finally:
+            db.close()
+
+    def validate_graph(self) -> dict[str, Any]:
+        db = self._database()
+        try:
+            issues = GraphService(db, self.config).validate()
+            return {"valid": not issues, "issue_count": len(issues), "issues": issues}
+        finally:
+            db.close()
+
     def _database(self) -> Database:
         db = Database(self.database_path)
         if (
             not db.has_table("alert_rules")
             or not db.has_table("watchlists")
             or not db.has_table("signal_ai_analyses")
+            or not db.has_table("graph_nodes")
         ):
             db.initialize()
         return db

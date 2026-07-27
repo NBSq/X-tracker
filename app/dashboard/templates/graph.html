@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Relationship Graph{% endblock %}
+{% block heading %}Relationship Graph{% endblock %}
+{% block content %}
+<nav class="graph-tabs mb-4" aria-label="Graph views">
+  <a class="active" href="/graph">Graph</a><a href="/graph/emerging">Emerging</a><a href="/graph/bridges">Bridges</a><a href="/graph/analytics">Analytics</a>
+</nav>
+<form id="graph-filters" class="filter-bar graph-filters mb-3">
+  <label>Period<select class="form-select" name="period"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option><option value="365">1 year</option></select></label>
+  <label>Node type<select class="form-select" name="node_type"><option value="">All</option><option value="narrative">Narrative</option><option value="token">Token</option><option value="unified_event">Event</option><option value="source">Source</option><option value="watchlist">Watchlist</option><option value="rule">Rule</option></select></label>
+  <label>Edge type<select class="form-select" name="edge_type"><option value="">All</option><option value="narrative_mentions_token">Narrative / token</option><option value="narrative_related_to_narrative">Narrative / narrative</option><option value="token_co_occurs_with_token">Token / token</option><option value="source_reports_event">Source / event</option><option value="event_contains_narrative">Event / narrative</option><option value="event_mentions_token">Event / token</option></select></label>
+  <label>Min weight<input class="form-control" name="min_weight" type="number" min="0" max="1" step="0.05" value="0.05"></label>
+  <label>Occurrences<input class="form-control" name="min_occurrences" type="number" min="1" value="1"></label>
+  <label>Watchlist<select class="form-select" name="watchlist"><option value="">All</option>{% for item in watchlists %}<option value="{{ item.id }}">{{ item.name }}</option>{% endfor %}</select></label>
+  <label>Search<input class="form-control" name="search" maxlength="120"></label>
+  <label>Node limit<input class="form-control" name="limit" type="number" min="1" max="{{ max_nodes }}" value="150"></label>
+  <button class="btn btn-dark" type="submit">Apply</button>
+</form>
+<section class="graph-shell" aria-label="Relationship graph">
+  <div id="relationship-graph" class="graph-canvas" data-endpoint="/api/graph" aria-live="polite"></div>
+  <aside id="graph-selection" class="graph-selection">
+    <div class="graph-selection-head"><strong id="graph-selection-label">Graph overview</strong><span id="graph-selection-type">Live data</span></div>
+    <dl class="detail-list">
+      <div><dt>Nodes</dt><dd id="graph-node-count">0</dd></div>
+      <div><dt>Edges</dt><dd id="graph-edge-count">0</dd></div>
+      <div><dt>Activity</dt><dd id="graph-node-activity">-</dd></div>
+      <div><dt>Connections</dt><dd id="graph-node-degree">-</dd></div>
+      <div><dt>First seen</dt><dd id="graph-node-first">-</dd></div>
+      <div><dt>Last seen</dt><dd id="graph-node-last">-</dd></div>
+    </dl>
+  </aside>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
+<script src="{{ url_for('static', path='/graph.js') }}"></script>
+{% endblock %}

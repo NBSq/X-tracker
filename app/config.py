@@ -63,6 +63,12 @@ class Config:
     source_alert_after_failures: int = 3
     source_failure_alert_cooldown_minutes: int = 60
     source_recovery_notifications: bool = True
+    graph_recency_half_life_days: float = 14.0
+    graph_min_edge_weight: float = 0.05
+    graph_min_node_weight: float = 0.05
+    graph_ai_relationship_min_confidence: float = 0.75
+    graph_default_period_days: int = 30
+    graph_max_nodes: int = 250
 
 
 def _get_int_env(name: str, default: str) -> int:
@@ -227,6 +233,16 @@ def load_config() -> Config:
         source_recovery_notifications=_get_bool_env(
             "SOURCE_RECOVERY_NOTIFICATIONS", "true"
         ),
+        graph_recency_half_life_days=_get_float_env(
+            "GRAPH_RECENCY_HALF_LIFE_DAYS", "14"
+        ),
+        graph_min_edge_weight=_get_float_env("GRAPH_MIN_EDGE_WEIGHT", "0.05"),
+        graph_min_node_weight=_get_float_env("GRAPH_MIN_NODE_WEIGHT", "0.05"),
+        graph_ai_relationship_min_confidence=_get_float_env(
+            "GRAPH_AI_RELATIONSHIP_MIN_CONFIDENCE", "0.75"
+        ),
+        graph_default_period_days=_get_int_env("GRAPH_DEFAULT_PERIOD_DAYS", "30"),
+        graph_max_nodes=_get_int_env("GRAPH_MAX_NODES", "250"),
     )
     if config.openai_timeout_seconds <= 0:
         raise RuntimeError("OPENAI_TIMEOUT_SECONDS must be positive")
@@ -270,4 +286,17 @@ def load_config() -> Config:
     }.items():
         if not 0 <= value <= 1:
             raise RuntimeError(f"{name} must be between 0 and 1")
+    if config.graph_recency_half_life_days <= 0:
+        raise RuntimeError("GRAPH_RECENCY_HALF_LIFE_DAYS must be positive")
+    for name, value in {
+        "GRAPH_MIN_EDGE_WEIGHT": config.graph_min_edge_weight,
+        "GRAPH_MIN_NODE_WEIGHT": config.graph_min_node_weight,
+        "GRAPH_AI_RELATIONSHIP_MIN_CONFIDENCE": config.graph_ai_relationship_min_confidence,
+    }.items():
+        if not 0 <= value <= 1:
+            raise RuntimeError(f"{name} must be between 0 and 1")
+    if config.graph_default_period_days <= 0:
+        raise RuntimeError("GRAPH_DEFAULT_PERIOD_DAYS must be positive")
+    if not 1 <= config.graph_max_nodes <= 2000:
+        raise RuntimeError("GRAPH_MAX_NODES must be between 1 and 2000")
     return config

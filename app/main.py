@@ -281,6 +281,25 @@ def parse_args() -> argparse.Namespace:
         dest="export_deduplication_csv", action="store_true",
         help="Export deduplication statistics",
     )
+    parser.add_argument("--graph-summary", action="store_true", help="Print graph summary")
+    parser.add_argument(
+        "--graph-node", nargs=2, metavar=("NODE_TYPE", "ENTITY_ID"),
+        help="Show one graph node and its relationships",
+    )
+    parser.add_argument("--graph-top-narratives", action="store_true")
+    parser.add_argument("--graph-top-tokens", action="store_true")
+    parser.add_argument("--graph-emerging", action="store_true")
+    parser.add_argument("--graph-bridges", action="store_true")
+    parser.add_argument(
+        "--graph-snapshot", choices=("daily", "weekly", "monthly"),
+        help="Create an idempotent graph snapshot",
+    )
+    parser.add_argument("--graph-rebuild", action="store_true")
+    parser.add_argument("--graph-validate", action="store_true")
+    parser.add_argument("--export-graph-nodes-csv", action="store_true")
+    parser.add_argument("--export-graph-edges-csv", action="store_true")
+    parser.add_argument("--export-emerging-relationships-csv", action="store_true")
+    parser.add_argument("--export-graph-snapshots-csv", action="store_true")
     parser.add_argument(
         "--dashboard",
         action="store_true",
@@ -647,6 +666,14 @@ def requested_csv_exports(args: argparse.Namespace) -> tuple[str, ...]:
         kinds.append("unified_events")
     if args.export_deduplication_csv:
         kinds.append("deduplication")
+    if args.export_graph_nodes_csv:
+        kinds.append("graph_nodes")
+    if args.export_graph_edges_csv:
+        kinds.append("graph_edges")
+    if args.export_emerging_relationships_csv:
+        kinds.append("emerging_relationships")
+    if args.export_graph_snapshots_csv:
+        kinds.append("graph_snapshots")
     if args.export_csv == "all":
         kinds.extend(("signals", "outcomes", "performance"))
     elif args.export_csv:
@@ -1549,6 +1576,80 @@ def run_dashboard(config: Config, host: str, port: int) -> None:
     uvicorn.run(create_app(config.database_path, config=config), host=host, port=port)
 
 
+def requested_graph_command(args: argparse.Namespace) -> bool:
+    return any(
+        (
+            args.graph_summary,
+            args.graph_node,
+            args.graph_top_narratives,
+            args.graph_top_tokens,
+            args.graph_emerging,
+            args.graph_bridges,
+            args.graph_snapshot,
+            args.graph_rebuild,
+            args.graph_validate,
+        )
+    )
+
+
+def run_graph_command(args: argparse.Namespace, config: Config, db: Database) -> None:
+    from app.graph.service import GraphService
+
+    service = GraphService(db, config)
+    if args.graph_rebuild:
+        counts = service.rebuild()
+        logger.info(
+            "Graph rebuild complete: %d nodes, %d edges, %d events and %d signals processed",
+            counts["nodes"], counts["edges"], counts["events_processed"],
+            counts["signals_processed"],
+        )
+    elif args.graph_validate:
+        issues = service.validate()
+        if issues:
+            logger.warning("Graph validation found %d issue(s)\n%s", len(issues), json.dumps(issues, indent=2))
+        else:
+            logger.info("Graph validation complete: no issues found")
+    elif args.graph_snapshot:
+        snapshot, created = service.create_snapshot(args.graph_snapshot)
+        logger.info(
+            "Graph snapshot %s: id=%d nodes=%d edges=%d",
+            "created" if created else "already exists",
+            snapshot.id, snapshot.node_count, snapshot.edge_count,
+        )
+    elif args.graph_node:
+        detail = service.node_detail(args.graph_node[0], args.graph_node[1])
+        if detail is None:
+            raise ValueError("Graph node not found")
+        logger.info("Graph node\n%s", json.dumps(detail, indent=2, default=str))
+    elif args.graph_top_narratives or args.graph_top_tokens:
+        node_type = "narrative" if args.graph_top_narratives else "token"
+        rows = service.top_nodes(node_type)
+        text = "\n".join(
+            f"{index}. {row['label']} - weighted degree {row['weighted_degree']:.2f}"
+            for index, row in enumerate(rows, 1)
+        ) or "None"
+        logger.info("Top graph %ss\n%s", node_type, text)
+    elif args.graph_emerging:
+        logger.info(
+            "Emerging relationships\n%s",
+            "\n".join(
+                f"{item['source_label']} <-> {item['target_label']} - "
+                f"{item['emerging_relationship_score']:.1f} ({item['classification']})"
+                for item in service.emerging()
+            ) or "None",
+        )
+    elif args.graph_bridges:
+        logger.info(
+            "Bridge nodes\n%s",
+            "\n".join(
+                f"{item['label']} - {item['bridge_score']:.1f}"
+                for item in service.bridges()
+            ) or "None",
+        )
+    else:
+        logger.info("\n%s", service.format_summary())
+
+
 def requested_ingestion_command(args: argparse.Namespace) -> bool:
     return any(
         (
@@ -1685,6 +1786,9 @@ def main() -> None:
             return
         if requested_ingestion_command(args):
             run_ingestion_command(args, config, db)
+            return
+        if requested_graph_command(args):
+            run_graph_command(args, config, db)
             return
         export_kinds = requested_csv_exports(args)
         if export_kinds:

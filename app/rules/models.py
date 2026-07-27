@@ -31,6 +31,13 @@ RULE_FIELDS = frozenset(
         "duplicate_count",
         "conflict_count",
         "requires_review",
+        "node_degree",
+        "weighted_degree",
+        "bridge_score",
+        "emerging_relationship_score",
+        "source_diversity",
+        "connected_narrative_count",
+        "connected_token_count",
     }
 )
 ALERT_ACTIONS = frozenset(
@@ -112,6 +119,13 @@ class SignalFacts:
     duplicate_count: int = 0
     conflict_count: int = 0
     requires_review: bool = False
+    node_degree: int = 0
+    weighted_degree: float = 0.0
+    bridge_score: float = 0.0
+    emerging_relationship_score: float = 0.0
+    source_diversity: int = 0
+    connected_narrative_count: int = 0
+    connected_token_count: int = 0
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "SignalFacts":
@@ -166,6 +180,28 @@ class SignalFacts:
                 _number(value.get("conflict_count", 0), "conflict_count")
             ),
             requires_review=bool(value.get("requires_review", False)),
+            node_degree=int(_number(value.get("node_degree", 0), "node_degree")),
+            weighted_degree=_number(value.get("weighted_degree", 0), "weighted_degree"),
+            bridge_score=_number(value.get("bridge_score", 0), "bridge_score"),
+            emerging_relationship_score=_number(
+                value.get("emerging_relationship_score", 0),
+                "emerging_relationship_score",
+            ),
+            source_diversity=int(
+                _number(value.get("source_diversity", 0), "source_diversity")
+            ),
+            connected_narrative_count=int(
+                _number(
+                    value.get("connected_narrative_count", 0),
+                    "connected_narrative_count",
+                )
+            ),
+            connected_token_count=int(
+                _number(
+                    value.get("connected_token_count", 0),
+                    "connected_token_count",
+                )
+            ),
         )
 
     def value_for(self, field: str) -> Any:

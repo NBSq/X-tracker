@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Bridge Nodes{% endblock %}
+{% block heading %}Bridge Nodes{% endblock %}
+{% block content %}
+<nav class="graph-tabs mb-4"><a href="/graph">Graph</a><a href="/graph/emerging">Emerging</a><a class="active" href="/graph/bridges">Bridges</a><a href="/graph/analytics">Analytics</a></nav>
+<div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Node</th><th>Type</th><th>Bridge score</th><th>Clusters</th><th>Narratives</th><th>Tokens</th><th>Events</th><th>Sources</th></tr></thead><tbody>
+{% for item in nodes %}<tr><td><a class="signal-link" href="/graph/nodes/{{ item.node_type }}/{{ item.entity_id|urlencode }}"><strong>{{ item.label }}</strong></a></td><td>{{ item.node_type }}</td><td>{{ '%.1f'|format(item.bridge_score) }}</td><td>{{ item.connected_clusters }}</td><td>{{ item.connected_narrative_count }}</td><td>{{ item.connected_token_count }}</td><td>{{ item.supporting_event_count }}</td><td>{{ item.source_diversity }}</td></tr>{% else %}<tr><td colspan="8" class="empty-state">No bridge nodes detected.</td></tr>{% endfor %}
+</tbody></table></div>
+{% endblock %}

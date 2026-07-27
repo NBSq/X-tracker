@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Graph Analytics{% endblock %}
+{% block heading %}Graph Analytics{% endblock %}
+{% block content %}
+<nav class="graph-tabs mb-4"><a href="/graph">Graph</a><a href="/graph/emerging">Emerging</a><a href="/graph/bridges">Bridges</a><a class="active" href="/graph/analytics">Analytics</a></nav>
+<section class="metric-grid mb-5"><article class="metric-card"><span>Nodes</span><strong>{{ summary.node_count }}</strong></article><article class="metric-card"><span>Edges</span><strong>{{ summary.edge_count }}</strong></article><article class="metric-card"><span>Components</span><strong>{{ summary.component_count }}</strong></article><article class="metric-card accent"><span>Density</span><strong>{{ '%.3f'|format(summary.density) }}</strong></article></section>
+<div class="history-chart-grid">
+  <section><div class="section-heading"><h2>Node distribution</h2></div><dl class="detail-list">{% for name, count in summary.nodes_by_type.items() %}<div><dt>{{ name|replace('_', ' ')|title }}</dt><dd>{{ count }}</dd></div>{% endfor %}</dl></section>
+  <section><div class="section-heading"><h2>Edge distribution</h2></div><dl class="detail-list">{% for name, count in summary.edges_by_type.items() %}<div><dt>{{ name|replace('_', ' ')|title }}</dt><dd>{{ count }}</dd></div>{% endfor %}</dl></section>
+</div>
+<section class="dashboard-section mt-5"><div class="section-heading"><h2>Snapshots</h2></div><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Period</th><th>Nodes</th><th>Edges</th><th>Created</th></tr></thead><tbody>{% for item in snapshots %}<tr><td>{{ item.period_start }}<small>{{ item.period_end }}</small></td><td>{{ item.node_count }}</td><td>{{ item.edge_count }}</td><td>{{ item.created_at }}</td></tr>{% else %}<tr><td colspan="4" class="empty-state">No snapshots created.</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

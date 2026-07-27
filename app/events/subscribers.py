@@ -18,7 +18,11 @@ from app.events.models import (
     SourceFetchFailed,
     SourceRecovered,
     UnifiedEventMateriallyChanged,
+    UnifiedEventCreated,
+    UnifiedEventUpdated,
+    RuleTriggered,
 )
+from app.graph.service import GraphService
 from app.rules.engine import RuleEngine
 from app.watchlists.service import WatchlistService
 
@@ -271,11 +275,54 @@ class SourceHealthTelegramNotifier:
 
 
 class AIRuleEvaluationSubscriber:
-    def __init__(self, db: Database, telegram: TelegramAlerter | None) -> None:
-        self.engine = RuleEngine(db, telegram, rule_scope="ai")
+    def __init__(
+        self,
+        db: Database,
+        telegram: TelegramAlerter | None,
+        event_bus: EventBus | None = None,
+    ) -> None:
+        self.engine = RuleEngine(
+            db, telegram, rule_scope="ai", event_bus=event_bus
+        )
 
     def __call__(self, event: AIAnalysisCompleted) -> None:
         self.engine.evaluate_saved_signal(event.signal_id)
+
+
+class GraphEventSubscriber:
+    def __init__(self, service: GraphService, db: Database) -> None:
+        self.service = service
+        self.db = db
+
+    def signal_created(self, event: SignalCreated) -> None:
+        signal_id = self.db.find_signal_history_id(event.history_record())
+        if signal_id is not None:
+            unified_event = self.db.get_signal_unified_event(signal_id)
+            if unified_event is not None:
+                self.service.update_event(
+                    int(unified_event["id"]), publish=False
+                )
+            self.service.update_signal(signal_id)
+
+    def event_created(self, event: UnifiedEventCreated) -> None:
+        self.service.update_event(event.unified_event_id)
+
+    def event_updated(self, event: UnifiedEventUpdated) -> None:
+        self.service.update_event(event.unified_event_id)
+
+    def watchlist_matched(self, event: WatchlistMatched) -> None:
+        for watchlist_id in event.watchlist_ids:
+            self.service.update_watchlist(watchlist_id)
+        self.service.update_signal(event.signal_id)
+
+    def rule_triggered(self, event: RuleTriggered) -> None:
+        self.service.update_rule_match(event.rule_id, event.signal_id)
+
+    def ai_completed(self, event: AIAnalysisCompleted) -> None:
+        self.service.update_ai_analysis(event.signal_id)
+
+    def signal_evaluated(self, event: SignalEvaluated) -> None:
+        self.service.update_signal(event.signal_id)
 
 
 def register_default_subscribers(
@@ -286,10 +333,28 @@ def register_default_subscribers(
     config=None,
 ) -> None:
     event_bus.subscribe(SignalCreated, SignalPerformanceTracker(db, event_bus))
+    graph_subscriber = None
+    if config is not None:
+        graph_subscriber = GraphEventSubscriber(
+            GraphService(db, config, event_bus), db
+        )
+        event_bus.subscribe(SignalCreated, graph_subscriber.signal_created)
+        event_bus.subscribe(UnifiedEventCreated, graph_subscriber.event_created)
+        event_bus.subscribe(UnifiedEventUpdated, graph_subscriber.event_updated)
+        event_bus.subscribe(WatchlistMatched, graph_subscriber.watchlist_matched)
+        event_bus.subscribe(RuleTriggered, graph_subscriber.rule_triggered)
+        event_bus.subscribe(AIAnalysisCompleted, graph_subscriber.ai_completed)
+        event_bus.subscribe(SignalEvaluated, graph_subscriber.signal_evaluated)
     event_bus.subscribe(SignalCreated, WatchlistSignalMatcher(db, event_bus))
-    event_bus.subscribe(SignalCreated, RuleEngine(db, telegram, rule_scope="non_ai"))
+    event_bus.subscribe(
+        SignalCreated,
+        RuleEngine(db, telegram, rule_scope="non_ai", event_bus=event_bus),
+    )
     if reasoning is not None:
-        event_bus.subscribe(AIAnalysisCompleted, AIRuleEvaluationSubscriber(db, telegram))
+        event_bus.subscribe(
+            AIAnalysisCompleted,
+            AIRuleEvaluationSubscriber(db, telegram, event_bus),
+        )
         event_bus.subscribe(SignalCreated, SignalReasoningSubscriber(db, reasoning))
     if telegram is not None:
         event_bus.subscribe(SignalCreated, TelegramSignalNotifier(db, telegram))

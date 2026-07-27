@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -9,6 +10,8 @@ from pathlib import Path
 from app.analytics.historical import HistoricalAnalyticsService, HistoricalThresholds
 from app.db.database import Database
 from app.watchlists import WatchlistService
+from app.config import load_config
+from app.graph.service import GraphService
 
 
 SIGNAL_COLUMNS = (
@@ -213,6 +216,24 @@ DEDUPLICATION_COLUMNS = (
     "average_sources", "maximum_sources",
 )
 
+GRAPH_NODE_COLUMNS = (
+    "id", "node_type", "entity_id", "label", "normalized_label", "weight",
+    "activity_score", "first_seen_at", "last_seen_at", "metadata_json",
+)
+GRAPH_EDGE_COLUMNS = (
+    "id", "source_node_id", "source_type", "source_entity_id", "source_label",
+    "target_node_id", "target_type", "target_entity_id", "target_label", "edge_type",
+    "derivation", "weight", "occurrence_count", "confidence", "first_seen_at",
+    "last_seen_at", "metadata_json",
+)
+EMERGING_RELATIONSHIP_COLUMNS = GRAPH_EDGE_COLUMNS + (
+    "emerging_relationship_score", "classification",
+)
+GRAPH_SNAPSHOT_COLUMNS = (
+    "id", "period_start", "period_end", "node_count", "edge_count",
+    "metrics_json", "created_at",
+)
+
 
 @dataclass(frozen=True)
 class ExportedCSV:
@@ -262,6 +283,10 @@ class CSVExportService:
             "content_items",
             "unified_events",
             "deduplication",
+            "graph_nodes",
+            "graph_edges",
+            "emerging_relationships",
+            "graph_snapshots",
         }
         if unsupported:
             raise ValueError(f"Unsupported CSV export type: {sorted(unsupported)[0]}")
@@ -303,7 +328,54 @@ class CSVExportService:
             files.append(self._export_unified_events(timestamp))
         if "deduplication" in selected:
             files.append(self._export_deduplication(timestamp))
+        if "graph_nodes" in selected:
+            files.append(self._export_graph_nodes(timestamp, from_value, to_value))
+        if "graph_edges" in selected:
+            files.append(self._export_graph_edges(timestamp, from_value, to_value))
+        if "emerging_relationships" in selected:
+            files.append(self._export_emerging_relationships(timestamp))
+        if "graph_snapshots" in selected:
+            files.append(self._export_graph_snapshots(timestamp))
         return CSVExportResult(tuple(files))
+
+    def _export_graph_nodes(
+        self, timestamp: str, from_date: str | None, to_date: str | None,
+    ) -> ExportedCSV:
+        rows = [
+            dict(row) for row in self.database.get_graph_nodes(limit=None)
+            if _inside_dates(row["last_seen_at"], from_date, to_date)
+        ]
+        path = self._write("graph_nodes", timestamp, GRAPH_NODE_COLUMNS, rows)
+        return ExportedCSV("graph_nodes", path, len(rows))
+
+    def _export_graph_edges(
+        self, timestamp: str, from_date: str | None, to_date: str | None,
+    ) -> ExportedCSV:
+        rows = [
+            dict(row) for row in self.database.get_graph_edges(min_weight=0, limit=None)
+            if _inside_dates(row["last_seen_at"], from_date, to_date)
+        ]
+        path = self._write("graph_edges", timestamp, GRAPH_EDGE_COLUMNS, rows)
+        return ExportedCSV("graph_edges", path, len(rows))
+
+    def _export_emerging_relationships(self, timestamp: str) -> ExportedCSV:
+        rows = []
+        for item in GraphService(self.database, load_config()).emerging(limit=100000):
+            row = {
+                **item,
+                "metadata_json": json.dumps(item.get("metadata", {}), sort_keys=True),
+            }
+            rows.append(row)
+        path = self._write(
+            "emerging_relationships", timestamp,
+            EMERGING_RELATIONSHIP_COLUMNS, rows,
+        )
+        return ExportedCSV("emerging_relationships", path, len(rows))
+
+    def _export_graph_snapshots(self, timestamp: str) -> ExportedCSV:
+        rows = [dict(row) for row in self.database.get_graph_snapshots(100000)]
+        path = self._write("graph_snapshots", timestamp, GRAPH_SNAPSHOT_COLUMNS, rows)
+        return ExportedCSV("graph_snapshots", path, len(rows))
 
     def _export_sources(self, timestamp: str) -> ExportedCSV:
         rows = [dict(row) for row in self.database.get_content_sources()]
@@ -657,3 +729,8 @@ def _report_period(from_date: str | None, to_date: str | None) -> str:
     if to_date:
         return f"through {to_date}"
     return "all time"
+
+
+def _inside_dates(value: object, from_date: str | None, to_date: str | None) -> bool:
+    day = str(value or "")[:10]
+    return not ((from_date and day < from_date) or (to_date and day > to_date))

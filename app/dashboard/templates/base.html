@@ -32,6 +32,7 @@
             <a class="nav-link {% if page == 'sources' %}active{% endif %}" href="/sources">Sources</a>
             <a class="nav-link {% if page == 'unified_events' %}active{% endif %}" href="/unified-events">Events</a>
             <a class="nav-link {% if page == 'deduplication' %}active{% endif %}" href="/deduplication">Deduplication</a>
+            <a class="nav-link {% if page in ['graph', 'graph_emerging', 'graph_bridges', 'graph_analytics'] %}active{% endif %}" href="/graph">Graph</a>
             <a class="nav-link {% if page == 'ai' %}active{% endif %}" href="/ai">AI</a>
           </div>
         </div>
@@ -56,5 +57,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script src="{{ url_for('static', path='/dashboard.js') }}"></script>
+  {% block scripts %}{% endblock %}
 </body>
 </html>

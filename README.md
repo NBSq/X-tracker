@@ -19,6 +19,7 @@ The project supports real APIs, public RSS feeds, and a fully local mock-AI work
 - Send HTML-formatted Telegram spike alerts, summaries, trends, and digests
 - Explore signals and performance in the built-in FastAPI analytics dashboard
 - Route new signals through configurable smart alert rules
+- Explore deterministic token, narrative, event, source, watchlist, and rule relationships
 - Run a complete local MVP without X or OpenAI credentials
 
 ## Screenshots
@@ -28,6 +29,12 @@ The project supports real APIs, public RSS feeds, and a fully local mock-AI work
 ![Analytics dashboard overview](docs/screenshots/dashboard-overview.png)
 
 The dashboard presents system health, latest signals, evaluated accuracy, momentum, top narratives, and top tokens from the existing SQLite database.
+
+### Narrative Relationship Graph
+
+![Narrative relationship graph](docs/screenshots/relationship-graph.png)
+
+The graph explorer keeps observed evidence distinct from AI-suggested relationships and supports period, type, weight, occurrence, watchlist, and search filters.
 
 ## Architecture
 
@@ -69,6 +76,9 @@ flowchart LR
     Bus --> Telegram["Telegram Subscriber"]
     Bus --> Rules["Smart Alert Rule Engine"]
     Bus --> Watchlists["Watchlist Matcher"]
+    Bus --> Graph["Relationship Graph Service"]
+    Graph --> GraphDB[("Graph Projection + Snapshots")]
+    GraphDB --> Dashboard
     Watchlists -->|WatchlistMatched| Bus
     Watchlists --> Focused["Focused Alerts / Associations"]
     Rules --> RuleActions["Telegram / Flags / Digest / CSV"]
@@ -113,6 +123,9 @@ The application uses a synchronous, typed, in-process event bus with no external
 | `UnifiedEventUpdated` | Supporting evidence is added | Event metrics and timelines |
 | `UnifiedEventMateriallyChanged` | Coverage, score, or conflicts cross configured thresholds | Telegram update notifications |
 | `SourceFetchFailed` / `SourceRecovered` | Source health changes | Thresholded Telegram health alerts |
+| `GraphUpdated` | An incremental graph projection changes | Dashboard/API extension point |
+| `EmergingRelationshipDetected` | A relationship crosses the accelerating threshold | Alerting and analytics extension point |
+| `GraphSnapshotCreated` | A daily, weekly, or monthly snapshot is persisted | Historical graph analytics extension point |
 
 The bus is intentionally transport-neutral. Future Dashboard, REST API, websocket, or audit-log adapters can subscribe without changing scoring and analysis code. Existing public helpers remain callable without supplying a bus; they create and register the default subscribers automatically.
 
@@ -154,6 +167,75 @@ Narrative Momentum is a bounded `0-100` heuristic combining:
 
 Momentum rankings appear in spike alerts, trend reports, and daily digests.
 
+## Narrative Relationship Graph
+
+The graph is a derived projection over existing SQLite records. It never creates a separate analytics database and does not duplicate article bodies. `GraphService` incrementally consumes signals, unified events, source evidence, watchlist associations, triggered rules, AI analyses, and outcomes through the existing repositories and Event Bus. `--graph-rebuild` explicitly recreates only the projection and preserves source records, signals, events, rules, and watchlists.
+
+### Nodes And Edges
+
+Supported node types are `narrative`, `token`, `unified_event`, `source`, `watchlist`, and `rule`. Tokens use canonical uppercase symbols and known aliases such as Bitcoin to `BTC`; narrative identity is case-insensitive and whitespace-normalized without fuzzy semantic merging.
+
+Supported edge types are:
+
+- `narrative_mentions_token`
+- `narrative_related_to_narrative`
+- `event_contains_narrative`
+- `event_mentions_token`
+- `source_reports_event`
+- `watchlist_tracks_token`
+- `watchlist_tracks_narrative`
+- `rule_triggered_by_event`
+- `rule_matches_watchlist`
+- `token_co_occurs_with_token`
+
+Narrative-to-narrative and token co-occurrence edges are undirected and stored in deterministic node-ID order. Every evidence key is retained once, so replaying the same event does not increase occurrence counts. AI-derived edges use `derivation=ai`, retain model confidence, require `GRAPH_AI_RELATIONSHIP_MIN_CONFIDENCE`, and never overwrite an observed edge.
+
+### Weighting And Decay
+
+All graph scores are deterministic and bounded. Edge weight uses:
+
+```text
+evidence  = min(1, log(1 + occurrences) / log(11))
+diversity = min(1, (unique sources + unified events) / 8)
+quality   = average(hype/100, momentum/100, confidence/10,
+                    outcome success rate/100, priority/100)
+base      = 0.45 * evidence + 0.20 * diversity + 0.35 * quality
+AI edge   = 0.65 * base + 0.35 * AI confidence
+weight    = base * 0.5 ^ (age days / GRAPH_RECENCY_HALF_LIFE_DAYS)
+```
+
+Node weight combines 65% connectivity, using `1 - exp(-weighted_degree / 3)`, with 35% activity and the same recency decay. Decay is recalculated when graph views are read, so old relationships become less prominent without deleting history. `GRAPH_MIN_EDGE_WEIGHT` and `GRAPH_MIN_NODE_WEIGHT` control default presentation thresholds.
+
+Emerging relationship score combines recent occurrence growth (30%), source diversity (20%), event diversity (15%), hype (15%), momentum (10%), and recency (10%). Scores at least 75 are `accelerating`; scores at least 55 with two observations are `emerging`; lower recent scores are `stable`; decayed or contracting evidence is `weakening` or `inactive`. Snapshot baselines make growth comparisons deterministic.
+
+Bridge score rewards a token or narrative whose neighbors occupy otherwise disconnected groups, then adds bounded connected-entity and source-diversity evidence. Node details expose connected clusters, supporting events, centrality, degree, weighted degree, and outcome continuation statistics. These associations show correlation and shared attention, not causation or profitability.
+
+### Graph Commands
+
+```powershell
+python -m app.main --graph-summary
+python -m app.main --graph-node token SOL
+python -m app.main --graph-top-narratives
+python -m app.main --graph-top-tokens
+python -m app.main --graph-emerging
+python -m app.main --graph-bridges
+python -m app.main --graph-snapshot daily
+python -m app.main --graph-snapshot weekly
+python -m app.main --graph-snapshot monthly
+python -m app.main --graph-rebuild
+python -m app.main --graph-validate
+```
+
+Snapshot creation is idempotent for each calendar period. Validation reports missing nodes, duplicate or reversed deterministic edges, invalid types, out-of-range weights/confidence, orphaned references, and inconsistent snapshot dates without modifying data.
+
+### Dashboard And API
+
+Start the dashboard with `python -m app.main --dashboard`. Use `/graph` for the bounded Cytoscape.js explorer, `/graph/nodes/{node_type}/{entity_id}` for evidence and history, `/graph/emerging` for changing relationships, `/graph/bridges` for cross-cluster entities, and `/graph/analytics` for distributions and snapshots. The visualization pins Cytoscape.js `3.30.4`, visually distinguishes node types, sizes nodes by weight, sizes edges by weight, and uses dashed lines for AI-derived evidence.
+
+REST endpoints are `GET /api/graph`, `GET /api/graph/nodes`, `GET /api/graph/nodes/{node_type}/{entity_id}`, `GET /api/graph/edges`, `GET /api/graph/summary`, `GET /api/graph/emerging`, `GET /api/graph/bridges`, `GET /api/graph/snapshots`, `POST /api/graph/snapshots`, `POST /api/graph/rebuild`, and `GET /api/graph/validate`. Query limits are validated and graph responses are capped by `GRAPH_MAX_NODES`.
+
+Known limitations: centrality and bridge metrics are lightweight heuristics rather than full academic graph algorithms; emerging status depends on accumulated tracker evidence; AI suggestions can still be incomplete despite confidence filtering; and no relationship predicts guaranteed market or token-price performance.
+
 ## Project Structure
 
 ```text
@@ -178,6 +260,9 @@ app/
   events/models.py
   events/subscribers.py
   export/csv_exporter.py
+  graph/models.py
+  graph/service.py
+  graph/weights.py
   rules/engine.py
   rules/models.py
   watchlists/models.py
@@ -254,6 +339,12 @@ OPENAI_DAILY_REQUEST_LIMIT=100
 OPENAI_CACHE_TTL_HOURS=24
 OPENAI_FALLBACK_TO_MOCK=true
 OPENAI_STORE_RESPONSES=false
+GRAPH_RECENCY_HALF_LIFE_DAYS=14
+GRAPH_MIN_EDGE_WEIGHT=0.05
+GRAPH_MIN_NODE_WEIGHT=0.05
+GRAPH_AI_RELATIONSHIP_MIN_CONFIDENCE=0.75
+GRAPH_DEFAULT_PERIOD_DAYS=30
+GRAPH_MAX_NODES=250
 ```
 
 When Telegram credentials are missing, the application continues normally and logs reports to the console.
@@ -333,6 +424,9 @@ The dashboard reads analytics from SQLite and provides these pages:
 - `/tokens` 24-hour token rankings
 - `/rules` smart alert rule management and rule details
 - `/watchlists` focused-alert groups, settings, matching signals, and outcomes
+- `/graph` interactive relationship explorer
+- `/graph/emerging` and `/graph/bridges` relationship rankings
+- `/graph/analytics` aggregate metrics and snapshots
 
 JSON endpoints are available for signals, performance, outcomes, historical analytics, narratives, tokens, rules, and system status. Pages poll analytics endpoints every 30 seconds, so collector and dashboard processes can share the same SQLite file without restarting the web server. The Outcomes page filters by status, evaluation window, token, and narrative. The History page selects `7d`, `30d`, `90d`, or `all` and links to narrative and token detail views.
 
@@ -356,7 +450,7 @@ Conditions are JSON expression trees. `AND` and `OR` accept non-empty arrays; `N
 }
 ```
 
-Supported fields are `token`, `narrative`, `hype_score`, `momentum_score`, `confidence`, `mentions`, `outcome_success_rate`, `watchlist`, `watchlist_id`, `watchlist_priority`, and `matched_watchlist`. Text supports `eq`, `ne`, `contains`, and `in`; numeric fields support `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, and the symbol aliases `==`, `!=`, `>`, `>=`, `<`, `<=`. Text comparisons are case-insensitive. Outcome success rate is the percentage of saved successful outcomes for matching token or narrative signals; it is `0` while no evaluated outcomes exist.
+Supported fields are `token`, `narrative`, `hype_score`, `momentum_score`, `confidence`, `mentions`, `outcome_success_rate`, `watchlist`, `watchlist_id`, `watchlist_priority`, `matched_watchlist`, `node_degree`, `weighted_degree`, `bridge_score`, `emerging_relationship_score`, `source_diversity`, `connected_narrative_count`, and `connected_token_count`. Text supports `eq`, `ne`, `contains`, and `in`; numeric fields support `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, and the symbol aliases `==`, `!=`, `>`, `>=`, `<`, `<=`. Text comparisons are case-insensitive. Outcome success rate is the percentage of saved successful outcomes for matching token or narrative signals; it is `0` while no evaluated outcomes exist.
 
 Actions:
 
@@ -710,6 +804,10 @@ python -m app.main --export-deduplication-report-csv
 python -m app.main --export-history-csv --period 30d
 python -m app.main --export-watchlists-csv
 python -m app.main --export-watchlist-signals-csv "Main Portfolio"
+python -m app.main --export-graph-nodes-csv
+python -m app.main --export-graph-edges-csv
+python -m app.main --export-emerging-relationships-csv
+python -m app.main --export-graph-snapshots-csv
 python -m app.main --export-csv all
 ```
 
@@ -739,6 +837,10 @@ token_history_2026-07-21_180000.csv
 watchlists_2026-07-21_180000.csv
 watchlist_items_2026-07-21_180000.csv
 watchlist_signals_2026-07-21_180000.csv
+graph_nodes_2026-07-21_180000.csv
+graph_edges_2026-07-21_180000.csv
+emerging_relationships_2026-07-21_180000.csv
+graph_snapshots_2026-07-21_180000.csv
 ```
 
 Signal columns contain the stored identity, creation time, token/narrative, hype, momentum, mentions, confidence, action, and latest outcome status. Outcome columns contain the signal and evaluation timestamps, evaluation window, baseline/current metrics, changes, status, and notes. No synthetic explanation is added because signal explanations are not persisted in SQLite.
@@ -748,6 +850,8 @@ Performance export creates one overall summary row plus a separate narrative-lev
 `--export-history-csv` reuses the same Excel-compatible writer and creates historical summary, timeline, narrative, and token files for the selected `--period`. Existing `--export-csv all` remains backward compatible and continues to mean signals, outcomes, and performance; historical export is explicit.
 
 `--export-watchlists-csv` writes watchlist definitions, typed settings, counts, performance, and a separate item file. `--export-watchlist-signals-csv` writes one watchlist's matching signal associations and supports the existing `--from-date`, `--to-date`, and `--output-dir` options.
+
+Graph exports reuse the same UTF-8 BOM writer, deterministic columns, date filtering, and collision-safe filenames. Node and edge files retain normalized entity IDs, bounded weights, occurrence counts, derivation, confidence, timestamps, and compact metadata; emerging exports add score and classification; snapshot exports contain aggregate metrics only.
 
 CSV files use deterministic column ordering, standard CSV quoting, ISO 8601 timestamps, and UTF-8 with a byte-order mark for Microsoft Excel compatibility. Numeric values do not include display symbols such as `%`, `+`, or `/100`.
 
@@ -854,6 +958,7 @@ Tests cover:
 - Smart-rule validation, nested logic, persistence, event handling, actions, CLI, and REST CRUD
 - Watchlist normalization, matching, thresholds, events, reports, Telegram aggregation, dashboard/API CRUD, filters, and CSV exports
 - Multi-source normalization, exact/near deduplication, unified events, source health, event-bus publication, migration, dashboard/API, and CSV exports
+- Graph normalization, deterministic edges, weighting, decay, rebuilds, snapshots, metrics, rules, watchlists, outcomes, Event Bus updates, dashboard/API limits, and CSV exports
 
 ## Contributing
 
@@ -887,6 +992,7 @@ pytest
 - Smart alert rules live in `alert_rules`; per-signal matches and action markers live in `signal_rule_matches`.
 - Watchlists and items live in `watchlists` and `watchlist_items`; matches live in `signal_watchlists` with a uniqueness constraint per signal, watchlist, type, and value.
 - Historical query indexes for signal timestamps, narrative/token plus timestamp, and outcome evaluation timestamps are added with `CREATE INDEX IF NOT EXISTS`.
+- Relationship projections live in `graph_nodes`, `graph_edges`, and `graph_snapshots`; automatic `CREATE TABLE/INDEX IF NOT EXISTS` initialization migrates existing databases in place.
 - `--reset-db` clears analyses, alerts, narrative history, momentum snapshots, signal history, outcomes, rule matches, and watchlist signal associations. Rule and watchlist definitions are preserved.
 - Individual post-analysis, feed, OpenAI, and Telegram errors are logged without silently failing.
 
@@ -899,6 +1005,7 @@ pytest
 - [x] Add configurable token and narrative watchlists
 - [x] Add source-level reliability and influence weighting
 - [x] Add multi-source smart deduplication and unified-event timelines
+- [x] Add an interactive narrative relationship graph with snapshots and exports
 - [ ] Add semantic clustering for emerging narratives
 - [ ] Add richer interactive charts and momentum sparklines
 - [ ] Add PostgreSQL support for larger deployments

@@ -19,6 +19,10 @@ from app.events.models import (
     UnifiedEventCreated,
     UnifiedEventMateriallyChanged,
     UnifiedEventUpdated,
+    EmergingRelationshipDetected,
+    GraphSnapshotCreated,
+    GraphUpdated,
+    RuleTriggered,
 )
 
 __all__ = [
@@ -42,4 +46,8 @@ __all__ = [
     "UnifiedEventCreated",
     "UnifiedEventMateriallyChanged",
     "UnifiedEventUpdated",
+    "EmergingRelationshipDetected",
+    "GraphSnapshotCreated",
+    "GraphUpdated",
+    "RuleTriggered",
 ]

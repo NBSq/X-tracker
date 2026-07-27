@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Emerging Relationships{% endblock %}
+{% block heading %}Emerging Relationships{% endblock %}
+{% block content %}
+<nav class="graph-tabs mb-4"><a href="/graph">Graph</a><a class="active" href="/graph/emerging">Emerging</a><a href="/graph/bridges">Bridges</a><a href="/graph/analytics">Analytics</a></nav>
+<div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Relationship</th><th>Type</th><th>Evidence</th><th>Weight</th><th>Emerging score</th><th>Status</th><th>Last seen</th></tr></thead><tbody>
+{% for item in relationships %}<tr><td><strong>{{ item.source_label }}</strong><small>{{ item.target_label }}</small></td><td>{{ item.edge_type|replace('_', ' ') }}</td><td>{{ item.occurrence_count }}</td><td>{{ '%.2f'|format(item.weight) }}</td><td>{{ '%.1f'|format(item.emerging_relationship_score) }}</td><td><span class="outcome outcome-{{ item.classification }}">{{ item.classification }}</span></td><td>{{ item.last_seen_at }}</td></tr>{% else %}<tr><td colspan="7" class="empty-state">No relationships meet the current evidence threshold.</td></tr>{% endfor %}
+</tbody></table></div>
+{% endblock %}
