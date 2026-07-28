@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Quality Recommendations{% endblock %}
+{% block heading %}Quality Recommendations{% endblock %}
+{% block content %}
+<nav class="quality-tabs mb-4"><a href="/quality">Overview</a><a href="/quality/sources">Sources</a><a href="/quality/rules">Rules</a><a href="/quality/watchlists">Watchlists</a><a href="/quality/ai">AI</a><a href="/quality/narratives">Narratives</a><a href="/quality/tokens">Tokens</a><a class="active" href="/quality/recommendations">Recommendations</a></nav>
+<section class="dashboard-section mb-5"><div class="section-heading"><h2>Severity distribution</h2></div><div class="quality-severity-chart">{% for severity, count in severity_counts.items() %}<div><span>{{ severity|title }}</span><i class="{{ severity }}" style="--quality-width: {{ (count / recommendations|length * 100) if recommendations else 0 }}%"></i><b>{{ count }}</b></div>{% endfor %}</div></section>
+<section class="dashboard-section"><div class="section-heading"><h2>Deterministic findings</h2><span class="section-meta">No rule is changed automatically</span></div><div class="quality-recommendations">
+{% for item in recommendations %}<article><div><span class="quality-severity quality-severity-{{ item.severity }}">{{ item.severity }}</span><span class="type-label">{{ item.status }}</span></div><h2>{{ item.title }}</h2><p>{{ item.description }}</p><dl><div><dt>Entity</dt><dd>{{ item.entity_type }} · {{ item.entity_id }}</dd></div><div><dt>Suggested action</dt><dd>{{ item.suggested_action }}</dd></div><div><dt>Confidence</dt><dd>{{ '%.0f'|format(item.confidence) }}%</dd></div></dl></article>
+{% else %}<p class="empty-state">No quality recommendations are open.</p>{% endfor %}
+</div></section>
+{% endblock %}

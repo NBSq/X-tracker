@@ -23,6 +23,11 @@ from app.events.models import (
     GraphSnapshotCreated,
     GraphUpdated,
     RuleTriggered,
+    QualityAggregateUpdated,
+    QualityDegradationDetected,
+    QualityImprovementDetected,
+    QualityRecommendationCreated,
+    SignalQualityCalculated,
 )
 
 __all__ = [
@@ -50,4 +55,9 @@ __all__ = [
     "GraphSnapshotCreated",
     "GraphUpdated",
     "RuleTriggered",
+    "QualityAggregateUpdated",
+    "QualityDegradationDetected",
+    "QualityImprovementDetected",
+    "QualityRecommendationCreated",
+    "SignalQualityCalculated",
 ]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from dataclasses import replace
 
 import json
 import logging
@@ -17,6 +18,7 @@ from app.rules.models import (
     RuleValidationError,
     SignalFacts,
     condition_uses_ai,
+    condition_uses_quality,
     evaluate_condition,
     normalize_actions,
     validate_condition,
@@ -158,6 +160,16 @@ class RuleEngine:
         graph_metrics = _signal_graph_metrics(
             self.db, signal["token"], signal["narrative"]
         )
+        quality = self.db.get_signal_quality_score(signal_id)
+        quality_metrics = {
+            "signal_quality_score": float(quality["quality_score"]) if quality else 0.0,
+            "quality_classification": str(quality["classification"]) if quality else None,
+            "source_reliability": float(quality["source_reliability"] or 0) if quality else 0.0,
+            "evidence_strength": float(quality["evidence_strength"] or 0) if quality else 0.0,
+            "confidence_calibration": float(quality["confidence_calibration"] or 0) if quality else 0.0,
+            "noise_risk": float(quality["noise_risk"] or 0) if quality else 0.0,
+            "evaluation_coverage": float(quality["evaluation_coverage"] or 0) if quality else 0.0,
+        }
         unified_event = self.db.get_signal_unified_event(signal_id)
         event_age_minutes = 0.0
         if unified_event is not None:
@@ -213,14 +225,19 @@ class RuleEngine:
             ),
             requires_review=bool(unified_event["requires_review"]) if unified_event else False,
             **graph_metrics,
+            **quality_metrics,
         )
         for rule in enabled_rules:
             uses_ai = condition_uses_ai(rule.condition)
-            if self.rule_scope == "non_ai" and uses_ai:
+            uses_quality = condition_uses_quality(rule.condition)
+            if self.rule_scope == "non_ai" and (uses_ai or uses_quality):
                 continue
             if self.rule_scope == "ai" and not uses_ai:
                 continue
-            if not evaluate_condition(rule.condition, facts):
+            if self.rule_scope == "quality" and not uses_quality:
+                continue
+            rule_facts = replace(facts, rule_priority=rule.priority)
+            if not evaluate_condition(rule.condition, rule_facts):
                 continue
             created = self.db.save_rule_match(signal_id, rule.id, rule.actions)
             if not created:
@@ -230,7 +247,7 @@ class RuleEngine:
             logger.info("Smart alert rule matched: %s", rule.name)
             if "telegram" in rule.actions and self.telegram is not None:
                 try:
-                    self.telegram.send_rule_alert(rule.name, rule.priority, facts)
+                    self.telegram.send_rule_alert(rule.name, rule.priority, rule_facts)
                 except Exception:
                     logger.exception("Telegram smart rule alert failed for %s", rule.name)
 

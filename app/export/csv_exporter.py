@@ -12,6 +12,7 @@ from app.db.database import Database
 from app.watchlists import WatchlistService
 from app.config import load_config
 from app.graph.service import GraphService
+from app.quality.service import SignalQualityService
 
 
 SIGNAL_COLUMNS = (
@@ -233,6 +234,31 @@ GRAPH_SNAPSHOT_COLUMNS = (
     "id", "period_start", "period_end", "node_count", "edge_count",
     "metrics_json", "created_at",
 )
+SIGNAL_QUALITY_COLUMNS = (
+    "id", "signal_id", "signal_created_at", "signal_type", "token", "narrative",
+    "quality_score", "classification", "outcome_quality",
+    "confidence_calibration", "source_reliability", "evidence_strength",
+    "source_diversity", "timeliness", "rule_precision", "watchlist_relevance",
+    "ai_agreement", "noise_risk", "evaluation_coverage", "evidence_count",
+    "calculation_version", "breakdown_json", "calculated_at",
+)
+QUALITY_AGGREGATE_COLUMNS = (
+    "entity_type", "entity_id", "label", "period_start", "period_end",
+    "signal_count", "evaluated_count", "successful_count", "neutral_count",
+    "failed_count", "average_quality_score", "median_quality_score", "precision",
+    "noise_rate", "evaluation_coverage", "average_confidence",
+    "calibration_error", "reliability_score", "sample_sufficient",
+    "calculation_version", "metrics_json",
+)
+AI_QUALITY_COLUMNS = QUALITY_AGGREGATE_COLUMNS + (
+    "provider_or_model", "fallback_rate", "cache_hit_rate", "average_latency_ms",
+    "ranking_eligible",
+)
+QUALITY_RECOMMENDATION_COLUMNS = (
+    "id", "entity_type", "entity_id", "recommendation_type", "severity", "title",
+    "description", "suggested_action", "confidence", "minimum_sample_requirement",
+    "evidence_json", "period_key", "status", "created_at", "resolved_at",
+)
 
 
 @dataclass(frozen=True)
@@ -287,6 +313,12 @@ class CSVExportService:
             "graph_edges",
             "emerging_relationships",
             "graph_snapshots",
+            "signal_quality",
+            "source_quality",
+            "rule_quality",
+            "watchlist_quality",
+            "ai_quality",
+            "quality_recommendations",
         }
         if unsupported:
             raise ValueError(f"Unsupported CSV export type: {sorted(unsupported)[0]}")
@@ -336,7 +368,74 @@ class CSVExportService:
             files.append(self._export_emerging_relationships(timestamp))
         if "graph_snapshots" in selected:
             files.append(self._export_graph_snapshots(timestamp))
+        if "signal_quality" in selected:
+            files.append(self._export_signal_quality(timestamp, from_value, to_value))
+        for kind, entity_type in (
+            ("source_quality", "source"), ("rule_quality", "rule"),
+            ("watchlist_quality", "watchlist"),
+        ):
+            if kind in selected:
+                files.append(self._export_quality_entities(timestamp, kind, entity_type))
+        if "ai_quality" in selected:
+            files.append(self._export_ai_quality(timestamp))
+        if "quality_recommendations" in selected:
+            files.append(self._export_quality_recommendations(timestamp, from_value, to_value))
         return CSVExportResult(tuple(files))
+
+    def _quality_service(self) -> SignalQualityService:
+        return SignalQualityService(self.database, load_config())
+
+    def _export_signal_quality(
+        self, timestamp: str, from_date: str | None, to_date: str | None,
+    ) -> ExportedCSV:
+        service = self._quality_service()
+        service.calculate_missing()
+        rows = [
+            {**dict(row), "signal_created_at": _iso_timestamp(row["timestamp"])}
+            for row in self.database.get_signal_quality_scores(
+                limit=None, from_date=from_date, to_date=to_date,
+                calculation_version=service.config.quality_calculation_version,
+            )
+        ]
+        path = self._write("signal_quality", timestamp, SIGNAL_QUALITY_COLUMNS, rows)
+        return ExportedCSV("signal_quality", path, len(rows))
+
+    def _export_quality_entities(
+        self, timestamp: str, kind: str, entity_type: str,
+    ) -> ExportedCSV:
+        service = self._quality_service()
+        service.calculate_missing()
+        rows = []
+        for row in service.entity_report(entity_type):
+            item = dict(row)
+            item["metrics_json"] = json.dumps(item.pop("metrics", {}), sort_keys=True)
+            rows.append(item)
+        path = self._write(kind, timestamp, QUALITY_AGGREGATE_COLUMNS, rows)
+        return ExportedCSV(kind, path, len(rows))
+
+    def _export_ai_quality(self, timestamp: str) -> ExportedCSV:
+        service = self._quality_service()
+        service.calculate_missing()
+        rows = []
+        for row in service.ai_report():
+            item = dict(row)
+            item["metrics_json"] = json.dumps(item.pop("metrics", {}), sort_keys=True)
+            rows.append(item)
+        path = self._write("ai_quality", timestamp, AI_QUALITY_COLUMNS, rows)
+        return ExportedCSV("ai_quality", path, len(rows))
+
+    def _export_quality_recommendations(
+        self, timestamp: str, from_date: str | None, to_date: str | None,
+    ) -> ExportedCSV:
+        rows = [
+            dict(row) for row in self.database.get_quality_recommendations(limit=5000)
+            if _inside_dates(row["created_at"], from_date, to_date)
+        ]
+        path = self._write(
+            "quality_recommendations", timestamp,
+            QUALITY_RECOMMENDATION_COLUMNS, rows,
+        )
+        return ExportedCSV("quality_recommendations", path, len(rows))
 
     def _export_graph_nodes(
         self, timestamp: str, from_date: str | None, to_date: str | None,

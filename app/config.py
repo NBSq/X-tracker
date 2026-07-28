@@ -69,6 +69,26 @@ class Config:
     graph_ai_relationship_min_confidence: float = 0.75
     graph_default_period_days: int = 30
     graph_max_nodes: int = 250
+    quality_calculation_version: int = 1
+    quality_minimum_evidence: int = 2
+    quality_minimum_sample_size: int = 5
+    quality_outcome_weight: float = 0.25
+    quality_calibration_weight: float = 0.15
+    quality_source_reliability_weight: float = 0.15
+    quality_evidence_weight: float = 0.10
+    quality_source_diversity_weight: float = 0.10
+    quality_timeliness_weight: float = 0.10
+    quality_rule_precision_weight: float = 0.05
+    quality_watchlist_relevance_weight: float = 0.05
+    quality_ai_agreement_weight: float = 0.05
+    quality_excellent_threshold: float = 85.0
+    quality_strong_threshold: float = 70.0
+    quality_moderate_threshold: float = 55.0
+    quality_weak_threshold: float = 40.0
+    quality_timeliness_excellent_minutes: int = 5
+    quality_timeliness_good_minutes: int = 15
+    quality_timeliness_weak_minutes: int = 60
+    quality_change_significance: float = 5.0
 
 
 def _get_int_env(name: str, default: str) -> int:
@@ -243,6 +263,26 @@ def load_config() -> Config:
         ),
         graph_default_period_days=_get_int_env("GRAPH_DEFAULT_PERIOD_DAYS", "30"),
         graph_max_nodes=_get_int_env("GRAPH_MAX_NODES", "250"),
+        quality_calculation_version=_get_int_env("QUALITY_CALCULATION_VERSION", "1"),
+        quality_minimum_evidence=_get_int_env("QUALITY_MINIMUM_EVIDENCE", "2"),
+        quality_minimum_sample_size=_get_int_env("QUALITY_MINIMUM_SAMPLE_SIZE", "5"),
+        quality_outcome_weight=_get_float_env("QUALITY_WEIGHT_OUTCOME", "0.25"),
+        quality_calibration_weight=_get_float_env("QUALITY_WEIGHT_CALIBRATION", "0.15"),
+        quality_source_reliability_weight=_get_float_env("QUALITY_WEIGHT_SOURCE_RELIABILITY", "0.15"),
+        quality_evidence_weight=_get_float_env("QUALITY_WEIGHT_EVIDENCE", "0.10"),
+        quality_source_diversity_weight=_get_float_env("QUALITY_WEIGHT_SOURCE_DIVERSITY", "0.10"),
+        quality_timeliness_weight=_get_float_env("QUALITY_WEIGHT_TIMELINESS", "0.10"),
+        quality_rule_precision_weight=_get_float_env("QUALITY_WEIGHT_RULE_PRECISION", "0.05"),
+        quality_watchlist_relevance_weight=_get_float_env("QUALITY_WEIGHT_WATCHLIST_RELEVANCE", "0.05"),
+        quality_ai_agreement_weight=_get_float_env("QUALITY_WEIGHT_AI_AGREEMENT", "0.05"),
+        quality_excellent_threshold=_get_float_env("QUALITY_EXCELLENT_THRESHOLD", "85"),
+        quality_strong_threshold=_get_float_env("QUALITY_STRONG_THRESHOLD", "70"),
+        quality_moderate_threshold=_get_float_env("QUALITY_MODERATE_THRESHOLD", "55"),
+        quality_weak_threshold=_get_float_env("QUALITY_WEAK_THRESHOLD", "40"),
+        quality_timeliness_excellent_minutes=_get_int_env("QUALITY_TIMELINESS_EXCELLENT_MINUTES", "5"),
+        quality_timeliness_good_minutes=_get_int_env("QUALITY_TIMELINESS_GOOD_MINUTES", "15"),
+        quality_timeliness_weak_minutes=_get_int_env("QUALITY_TIMELINESS_WEAK_MINUTES", "60"),
+        quality_change_significance=_get_float_env("QUALITY_CHANGE_SIGNIFICANCE", "5"),
     )
     if config.openai_timeout_seconds <= 0:
         raise RuntimeError("OPENAI_TIMEOUT_SECONDS must be positive")
@@ -299,4 +339,32 @@ def load_config() -> Config:
         raise RuntimeError("GRAPH_DEFAULT_PERIOD_DAYS must be positive")
     if not 1 <= config.graph_max_nodes <= 2000:
         raise RuntimeError("GRAPH_MAX_NODES must be between 1 and 2000")
+    if config.quality_calculation_version <= 0:
+        raise RuntimeError("QUALITY_CALCULATION_VERSION must be positive")
+    if config.quality_minimum_evidence <= 0 or config.quality_minimum_sample_size <= 0:
+        raise RuntimeError("Quality minimum evidence and sample size must be positive")
+    quality_weights = (
+        config.quality_outcome_weight, config.quality_calibration_weight,
+        config.quality_source_reliability_weight, config.quality_evidence_weight,
+        config.quality_source_diversity_weight, config.quality_timeliness_weight,
+        config.quality_rule_precision_weight, config.quality_watchlist_relevance_weight,
+        config.quality_ai_agreement_weight,
+    )
+    if any(weight < 0 for weight in quality_weights) or sum(quality_weights) <= 0:
+        raise RuntimeError("Quality weights must be non-negative with a positive total")
+    thresholds = (
+        config.quality_excellent_threshold, config.quality_strong_threshold,
+        config.quality_moderate_threshold, config.quality_weak_threshold,
+    )
+    if not (100 >= thresholds[0] > thresholds[1] > thresholds[2] > thresholds[3] >= 0):
+        raise RuntimeError("Quality classification thresholds must descend within 0-100")
+    timing = (
+        config.quality_timeliness_excellent_minutes,
+        config.quality_timeliness_good_minutes,
+        config.quality_timeliness_weak_minutes,
+    )
+    if not (0 < timing[0] < timing[1] < timing[2]):
+        raise RuntimeError("Quality timeliness thresholds must be positive and increasing")
+    if config.quality_change_significance < 0:
+        raise RuntimeError("QUALITY_CHANGE_SIGNIFICANCE cannot be negative")
     return config

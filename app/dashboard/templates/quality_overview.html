@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Signal Quality{% endblock %}
+{% block heading %}Signal Quality Overview{% endblock %}
+{% block content %}
+<nav class="quality-tabs mb-4" aria-label="Quality analytics">
+  <a class="active" href="/quality">Overview</a><a href="/quality/sources">Sources</a><a href="/quality/rules">Rules</a><a href="/quality/watchlists">Watchlists</a><a href="/quality/ai">AI</a><a href="/quality/narratives">Narratives</a><a href="/quality/tokens">Tokens</a><a href="/quality/recommendations">Recommendations</a>
+</nav>
+<section class="metric-grid quality-metrics mb-5" aria-label="Quality metrics">
+  <article class="metric-card accent"><span>Average quality</span><strong>{{ '%.1f'|format(quality.average_quality_score or 0) }}</strong></article>
+  <article class="metric-card"><span>Median quality</span><strong>{{ '%.1f'|format(quality.median_quality_score or 0) }}</strong></article>
+  <article class="metric-card"><span>Precision</span><strong>{{ '%.1f'|format(quality.precision or 0) }}%</strong></article>
+  <article class="metric-card"><span>Coverage</span><strong>{{ '%.1f'|format(quality.evaluation_coverage or 0) }}%</strong></article>
+  <article class="metric-card"><span>Noise rate</span><strong>{{ '%.1f'|format(quality.noise_rate or 0) }}%</strong></article>
+  <article class="metric-card"><span>Calibration error</span><strong>{{ '%.3f'|format(quality.calibration_error or 0) }}</strong></article>
+</section>
+<div class="quality-layout mb-5">
+  <section class="dashboard-section">
+    <div class="section-heading"><h2>Classification distribution</h2><span class="section-meta">Version {{ quality.calculation_version }}</span></div>
+    <div class="quality-bars">
+      {% for name, count in quality.quality_distribution.items() %}
+      <div><span>{{ name|replace('_', ' ')|title }}</span><i style="--quality-width: {{ (count / quality.signal_count * 100) if quality.signal_count else 0 }}%"></i><b>{{ count }}</b></div>
+      {% else %}<p class="empty-state">Quality scores will appear after signals are processed.</p>{% endfor %}
+    </div>
+  </section>
+  <section class="dashboard-section">
+    <div class="section-heading"><h2>Period comparison</h2><span class="section-meta">Current vs previous</span></div>
+    <div class="quality-comparison">
+      {% for name, metric in quality.comparison.items() %}
+      <div><span>{{ name|replace('_', ' ')|title }}</span><strong>{{ metric.classification|replace('_', ' ')|title }}</strong><small>{% if metric.change is not none %}{{ '%+.2f'|format(metric.change) }}{% else %}Collecting history{% endif %}</small></div>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+<div class="quality-layout mb-5">
+  <section class="dashboard-section">
+    <div class="section-heading"><h2>Quality score over time</h2><span class="section-meta">Rolling windows</span></div>
+    <div class="quality-bars">
+      {% for item in quality.quality_trend %}<div><span>{{ item.period_end[:10] }}</span><i style="--quality-width: {{ item.average_quality_score or 0 }}%"></i><b>{{ '%.1f'|format(item.average_quality_score or 0) }}</b></div>{% endfor %}
+    </div>
+  </section>
+  <section class="dashboard-section">
+    <div class="section-heading"><h2>Precision, noise, and coverage</h2><span class="section-meta">Latest rolling windows</span></div>
+    <div class="quality-series">
+      {% for item in quality.quality_trend %}<div><span>{{ item.period_end[:10] }}</span><i class="precision" style="--quality-width: {{ item.precision or 0 }}%" title="Precision {{ item.precision or 0 }}%"></i><i class="noise" style="--quality-width: {{ item.noise_rate or 0 }}%" title="Noise {{ item.noise_rate or 0 }}%"></i><i class="coverage" style="--quality-width: {{ item.evaluation_coverage or 0 }}%" title="Coverage {{ item.evaluation_coverage or 0 }}%"></i></div>{% endfor %}
+    </div>
+    <p class="quality-legend"><span class="precision"></span>Precision <span class="noise"></span>Noise <span class="coverage"></span>Coverage</p>
+  </section>
+</div>
+<section class="dashboard-section mb-5">
+  <div class="section-heading"><h2>Confidence versus outcome</h2><span class="section-meta">Stored confidence is unchanged</span></div>
+  <div class="quality-confidence">
+    <div><span>Successful outcomes</span><i style="--quality-width: {{ (quality.metrics.get('average_success_confidence') or 0) * 10 }}%"></i><b>{% if quality.metrics.get('average_success_confidence') is not none %}{{ '%.1f'|format(quality.metrics.get('average_success_confidence')) }}/10{% else %}n/a{% endif %}</b></div>
+    <div><span>Failed outcomes</span><i style="--quality-width: {{ (quality.metrics.get('average_failed_confidence') or 0) * 10 }}%"></i><b>{% if quality.metrics.get('average_failed_confidence') is not none %}{{ '%.1f'|format(quality.metrics.get('average_failed_confidence')) }}/10{% else %}n/a{% endif %}</b></div>
+    <div><span>Overconfidence rate</span><i style="--quality-width: {{ quality.metrics.get('overconfidence_rate') or 0 }}%"></i><b>{% if quality.metrics.get('overconfidence_rate') is not none %}{{ '%.1f'|format(quality.metrics.get('overconfidence_rate')) }}%{% else %}n/a{% endif %}</b></div>
+  </div>
+</section>
+<div class="row g-5">
+  <section class="col-lg-6 dashboard-section"><div class="section-heading"><h2>Top sources</h2><a href="/quality/sources">View all</a></div><div class="performance-list">{% for item in quality.top_sources %}<div><strong>{{ item.label }}</strong><span>{{ item.signal_count }} signals · {{ '%.1f'|format(item.average_quality_score or 0) }} quality</span></div>{% else %}<p class="empty-state">No source evidence yet.</p>{% endfor %}</div></section>
+  <section class="col-lg-6 dashboard-section"><div class="section-heading"><h2>Open recommendations</h2><a href="/quality/recommendations">Review</a></div><div class="quality-callout"><strong>{{ quality.open_recommendations }}</strong><span>deterministic recommendations need attention</span><p>Quality is an internal evidence metric. It does not predict investment returns.</p></div></section>
+</div>
+{% endblock %}

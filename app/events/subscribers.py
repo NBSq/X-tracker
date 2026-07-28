@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import json
 from datetime import datetime, timedelta, timezone
 
 from app.ai.base import SignalAnalysisUnavailable
@@ -21,9 +22,13 @@ from app.events.models import (
     UnifiedEventCreated,
     UnifiedEventUpdated,
     RuleTriggered,
+    GraphUpdated,
+    SignalQualityCalculated,
 )
 from app.graph.service import GraphService
+from app.quality.service import SignalQualityService
 from app.rules.engine import RuleEngine
+from app.rules.models import condition_uses_quality
 from app.watchlists.service import WatchlistService
 
 
@@ -325,6 +330,62 @@ class GraphEventSubscriber:
         self.service.update_signal(event.signal_id)
 
 
+class SignalQualitySubscriber:
+    def __init__(self, service: SignalQualityService, db: Database) -> None:
+        self.service = service
+        self.db = db
+
+    def signal_created(self, event: SignalCreated) -> None:
+        signal_id = self.db.find_signal_history_id(event.history_record())
+        if signal_id is not None:
+            self.service.calculate_signal(signal_id)
+
+    def signal_evaluated(self, event: SignalEvaluated) -> None:
+        self.service.calculate_signal(event.signal_id)
+
+    def event_updated(self, event: UnifiedEventUpdated) -> None:
+        for signal in self.db.get_signals(limit=None):
+            if signal["unified_event_id"] == event.unified_event_id:
+                self.service.calculate_signal(int(signal["id"]))
+
+    def ai_completed(self, event: AIAnalysisCompleted) -> None:
+        self.service.calculate_signal(event.signal_id)
+
+    def rule_triggered(self, event: RuleTriggered) -> None:
+        rule = self.db.get_alert_rule(event.rule_id)
+        if rule is not None:
+            try:
+                condition = json.loads(str(rule["condition"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                condition = {}
+            if condition_uses_quality(condition):
+                return
+        self.service.calculate_signal(event.signal_id)
+
+    def watchlist_matched(self, event: WatchlistMatched) -> None:
+        self.service.calculate_signal(event.signal_id)
+
+    def graph_updated(self, event: GraphUpdated) -> None:
+        if event.update_reason == "rebuild":
+            return
+        latest = self.db.get_signals(limit=1)
+        if latest:
+            self.service.calculate_signal(int(latest[0]["id"]))
+
+
+class QualityRuleEvaluationSubscriber:
+    def __init__(
+        self, db: Database, telegram: TelegramAlerter | None,
+        event_bus: EventBus,
+    ) -> None:
+        self.engine = RuleEngine(
+            db, telegram, rule_scope="quality", event_bus=event_bus
+        )
+
+    def __call__(self, event: SignalQualityCalculated) -> None:
+        self.engine.evaluate_saved_signal(event.signal_id)
+
+
 def register_default_subscribers(
     event_bus: EventBus,
     db: Database,
@@ -333,6 +394,7 @@ def register_default_subscribers(
     config=None,
 ) -> None:
     event_bus.subscribe(SignalCreated, SignalPerformanceTracker(db, event_bus))
+    event_bus.subscribe(SignalEvaluated, SignalOutcomeStorage(db, event_bus))
     graph_subscriber = None
     if config is not None:
         graph_subscriber = GraphEventSubscriber(
@@ -350,6 +412,21 @@ def register_default_subscribers(
         SignalCreated,
         RuleEngine(db, telegram, rule_scope="non_ai", event_bus=event_bus),
     )
+    if config is not None:
+        quality_subscriber = SignalQualitySubscriber(
+            SignalQualityService(db, config, event_bus), db
+        )
+        event_bus.subscribe(SignalCreated, quality_subscriber.signal_created)
+        event_bus.subscribe(SignalEvaluated, quality_subscriber.signal_evaluated)
+        event_bus.subscribe(UnifiedEventUpdated, quality_subscriber.event_updated)
+        event_bus.subscribe(AIAnalysisCompleted, quality_subscriber.ai_completed)
+        event_bus.subscribe(RuleTriggered, quality_subscriber.rule_triggered)
+        event_bus.subscribe(WatchlistMatched, quality_subscriber.watchlist_matched)
+        event_bus.subscribe(GraphUpdated, quality_subscriber.graph_updated)
+        event_bus.subscribe(
+            SignalQualityCalculated,
+            QualityRuleEvaluationSubscriber(db, telegram, event_bus),
+        )
     if reasoning is not None:
         event_bus.subscribe(
             AIAnalysisCompleted,
@@ -372,7 +449,6 @@ def register_default_subscribers(
             event_bus.subscribe(SourceFetchFailed, health.failed)
             event_bus.subscribe(SourceRecovered, health.recovered)
     event_bus.subscribe(SignalCreated, SignalDatabaseStorage(db))
-    event_bus.subscribe(SignalEvaluated, SignalOutcomeStorage(db, event_bus))
 
 
 def _performance_updated(db: Database) -> PerformanceUpdated:

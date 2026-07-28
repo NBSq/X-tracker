@@ -300,6 +300,35 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--export-graph-edges-csv", action="store_true")
     parser.add_argument("--export-emerging-relationships-csv", action="store_true")
     parser.add_argument("--export-graph-snapshots-csv", action="store_true")
+    parser.add_argument("--quality-summary", action="store_true")
+    parser.add_argument("--quality-signal", type=positive_int, metavar="SIGNAL_ID")
+    parser.add_argument("--quality-sources", action="store_true")
+    parser.add_argument("--quality-rules", action="store_true")
+    parser.add_argument("--quality-watchlists", action="store_true")
+    parser.add_argument("--quality-narratives", action="store_true")
+    parser.add_argument("--quality-tokens", action="store_true")
+    parser.add_argument("--quality-ai", action="store_true")
+    parser.add_argument("--quality-recommendations", action="store_true")
+    parser.add_argument("--quality-recalculate", action="store_true")
+    parser.add_argument("--quality-validate", action="store_true")
+    parser.add_argument(
+        "--quality-entity", nargs=2, metavar=("TYPE", "ID"),
+        help="Limit quality recalculation to an entity",
+    )
+    parser.add_argument(
+        "--quality-period-days", type=positive_int, default=30,
+        help="Quality report and recalculation period (default: 30 days)",
+    )
+    parser.add_argument(
+        "--quality-version", type=positive_int,
+        help="Quality calculation version (default: configured version)",
+    )
+    parser.add_argument("--export-signal-quality-csv", action="store_true")
+    parser.add_argument("--export-source-quality-csv", action="store_true")
+    parser.add_argument("--export-rule-quality-csv", action="store_true")
+    parser.add_argument("--export-watchlist-quality-csv", action="store_true")
+    parser.add_argument("--export-ai-quality-csv", action="store_true")
+    parser.add_argument("--export-quality-recommendations-csv", action="store_true")
     parser.add_argument(
         "--dashboard",
         action="store_true",
@@ -674,6 +703,18 @@ def requested_csv_exports(args: argparse.Namespace) -> tuple[str, ...]:
         kinds.append("emerging_relationships")
     if args.export_graph_snapshots_csv:
         kinds.append("graph_snapshots")
+    if args.export_signal_quality_csv:
+        kinds.append("signal_quality")
+    if args.export_source_quality_csv:
+        kinds.append("source_quality")
+    if args.export_rule_quality_csv:
+        kinds.append("rule_quality")
+    if args.export_watchlist_quality_csv:
+        kinds.append("watchlist_quality")
+    if args.export_ai_quality_csv:
+        kinds.append("ai_quality")
+    if args.export_quality_recommendations_csv:
+        kinds.append("quality_recommendations")
     if args.export_csv == "all":
         kinds.extend(("signals", "outcomes", "performance"))
     elif args.export_csv:
@@ -715,6 +756,12 @@ def run_csv_exports(
         ("watchlists", "Watchlists exported"),
         ("watchlist_items", "Watchlist items exported"),
         ("watchlist_signals", "Watchlist signals exported"),
+        ("signal_quality", "Signal quality rows exported"),
+        ("source_quality", "Source quality rows exported"),
+        ("rule_quality", "Rule quality rows exported"),
+        ("watchlist_quality", "Watchlist quality rows exported"),
+        ("ai_quality", "AI quality rows exported"),
+        ("quality_recommendations", "Quality recommendations exported"),
     )
     for kind, label in labels:
         if any(item.kind == kind for item in result.files):
@@ -1650,6 +1697,60 @@ def run_graph_command(args: argparse.Namespace, config: Config, db: Database) ->
         logger.info("\n%s", service.format_summary())
 
 
+def requested_quality_command(args: argparse.Namespace) -> bool:
+    return any((
+        args.quality_summary, args.quality_signal, args.quality_sources,
+        args.quality_rules, args.quality_watchlists, args.quality_narratives,
+        args.quality_tokens, args.quality_ai, args.quality_recommendations,
+        args.quality_recalculate, args.quality_validate,
+    ))
+
+
+def run_quality_command(args: argparse.Namespace, config: Config, db: Database) -> None:
+    from app.quality import SignalQualityService, format_quality_summary
+
+    service = SignalQualityService(db, config)
+    period = args.quality_period_days
+    version = args.quality_version
+    if args.quality_signal:
+        result = service.calculate_signal(args.quality_signal, version=version)
+        logger.info("Signal quality\n%s", json.dumps(result.as_dict(), indent=2))
+    elif args.quality_recalculate:
+        entity_type, entity_id = args.quality_entity or (None, None)
+        result = service.recalculate(
+            entity_type=entity_type, entity_id=entity_id,
+            period_days=period, version=version,
+        )
+        logger.info("Quality recalculation complete: %s", json.dumps(result))
+    elif args.quality_validate:
+        issues = service.validate()
+        logger.info(
+            "Quality validation: %s\n%s",
+            "no issues found" if not issues else f"{len(issues)} issue(s)",
+            json.dumps(issues, indent=2),
+        )
+    elif args.quality_recommendations:
+        rows = service.generate_recommendations(period)
+        logger.info("Quality recommendations\n%s", json.dumps(rows, indent=2))
+    elif args.quality_ai:
+        service.calculate_missing(version=version)
+        logger.info("AI quality\n%s", json.dumps(service.ai_report(period), indent=2))
+    elif any((args.quality_sources, args.quality_rules, args.quality_watchlists,
+              args.quality_narratives, args.quality_tokens)):
+        entity_type = (
+            "source" if args.quality_sources else "rule" if args.quality_rules
+            else "watchlist" if args.quality_watchlists else "narrative"
+            if args.quality_narratives else "token"
+        )
+        service.calculate_missing(version=version)
+        logger.info(
+            "%s quality\n%s", entity_type.title(),
+            json.dumps(service.entity_report(entity_type, period_days=period), indent=2),
+        )
+    else:
+        logger.info("\n%s", format_quality_summary(service.summary(period)))
+
+
 def requested_ingestion_command(args: argparse.Namespace) -> bool:
     return any(
         (
@@ -1789,6 +1890,9 @@ def main() -> None:
             return
         if requested_graph_command(args):
             run_graph_command(args, config, db)
+            return
+        if requested_quality_command(args):
+            run_quality_command(args, config, db)
             return
         export_kinds = requested_csv_exports(args)
         if export_kinds:

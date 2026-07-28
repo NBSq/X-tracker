@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block heading %}{{ title }}{% endblock %}
+{% block content %}
+<nav class="quality-tabs mb-4"><a href="/quality">Overview</a><a class="{% if entity_type == 'source' %}active{% endif %}" href="/quality/sources">Sources</a><a class="{% if entity_type == 'rule' %}active{% endif %}" href="/quality/rules">Rules</a><a class="{% if entity_type == 'watchlist' %}active{% endif %}" href="/quality/watchlists">Watchlists</a><a class="{% if entity_type == 'ai' %}active{% endif %}" href="/quality/ai">AI</a><a class="{% if entity_type == 'narrative' %}active{% endif %}" href="/quality/narratives">Narratives</a><a class="{% if entity_type == 'token' %}active{% endif %}" href="/quality/tokens">Tokens</a><a href="/quality/recommendations">Recommendations</a></nav>
+<section class="dashboard-section"><div class="section-heading"><h2>30-day comparison</h2><span class="section-meta">Small samples are marked as collecting evidence</span></div><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Entity</th><th>Signals</th><th>Evaluated</th><th>Avg quality</th><th>Precision</th><th>Noise</th><th>Coverage</th><th>Sample</th></tr></thead><tbody>
+{% for item in rows %}<tr><td><strong>{{ item.label }}</strong><small>{{ item.entity_type|replace('_', ' ') }}</small></td><td>{{ item.signal_count }}</td><td>{{ item.evaluated_count }}</td><td>{{ '%.1f'|format(item.average_quality_score or 0) }}</td><td>{% if item.precision is not none %}{{ '%.1f'|format(item.precision) }}%{% else %}—{% endif %}</td><td>{% if item.noise_rate is not none %}{{ '%.1f'|format(item.noise_rate) }}%{% else %}—{% endif %}</td><td>{% if item.evaluation_coverage is not none %}{{ '%.1f'|format(item.evaluation_coverage) }}%{% else %}—{% endif %}</td><td><span class="type-label">{{ 'Reliable' if item.sample_sufficient or item.ranking_eligible else 'Collecting' }}</span></td></tr>
+{% else %}<tr><td class="empty-state" colspan="8">No matching quality evidence yet.</td></tr>{% endfor %}
+</tbody></table></div></section>
+<p class="quality-note mt-4">These metrics describe signal quality inside this tracker, not expected investment performance.</p>
+{% endblock %}

@@ -13,7 +13,10 @@ import sqlite3
 from app.ai.base import SignalAnalysisUnavailable
 from app.config import Config, load_config
 from app.analytics.historical import HistoricalThresholds
-from app.events import EventBus, NarrativeDetected, PerformanceUpdated, WatchlistMatched
+from app.events import (
+    EventBus, NarrativeDetected, PerformanceUpdated, SignalQualityCalculated,
+    WatchlistMatched,
+)
 from app.dashboard.service import DashboardService
 from app.rules import RuleValidationError
 from app.watchlists import WatchlistValidationError
@@ -97,13 +100,28 @@ class GraphSnapshotPayload(BaseModel):
     frequency: str = Field(pattern="^(daily|weekly|monthly)$")
 
 
+class QualityRecommendationUpdatePayload(BaseModel):
+    status: str = Field(pattern="^(open|acknowledged|resolved|dismissed)$")
+
+
+class QualityRecalculatePayload(BaseModel):
+    signal_id: int | None = Field(default=None, ge=1)
+    entity_type: str | None = Field(
+        default=None,
+        pattern="^(overall|signal_type|source|unified_event|rule|watchlist|ai_provider|ai_model|narrative|token|graph_node)$",
+    )
+    entity_id: str | None = Field(default=None, max_length=160)
+    period_days: int = Field(default=30, ge=1, le=3650)
+    calculation_version: int | None = Field(default=None, ge=1)
+
+
 class DashboardEventState:
     def __init__(self) -> None:
         self.last_event_at: str | None = None
 
     def handle(
         self,
-        event: PerformanceUpdated | NarrativeDetected | WatchlistMatched,
+        event: PerformanceUpdated | NarrativeDetected | WatchlistMatched | SignalQualityCalculated,
     ) -> None:
         self.last_event_at = datetime.now(timezone.utc).isoformat()
 
@@ -128,6 +146,7 @@ def create_app(
         event_bus.subscribe(PerformanceUpdated, event_state.handle)
         event_bus.subscribe(NarrativeDetected, event_state.handle)
         event_bus.subscribe(WatchlistMatched, event_state.handle)
+        event_bus.subscribe(SignalQualityCalculated, event_state.handle)
 
     app = FastAPI(
         title="x-narrative-tracker Analytics",
@@ -157,6 +176,21 @@ def create_app(
                 detail="period must be one of: 7d, 30d, 90d, all",
             )
         return period
+
+    def valid_date_range(from_date: str | None, to_date: str | None) -> None:
+        parsed = []
+        for label, value in (("from_date", from_date), ("to_date", to_date)):
+            if value is None:
+                parsed.append(None)
+                continue
+            try:
+                parsed.append(datetime.strptime(value, "%Y-%m-%d").date())
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422, detail=f"{label} must use YYYY-MM-DD"
+                ) from exc
+        if parsed[0] and parsed[1] and parsed[0] > parsed[1]:
+            raise HTTPException(status_code=422, detail="from_date cannot be after to_date")
 
     def rule_error(exc: Exception) -> HTTPException:
         if isinstance(exc, KeyError):
@@ -500,6 +534,70 @@ def create_app(
             raise HTTPException(status_code=404, detail="Graph node not found")
         return render(
             request, "graph_node.html", "graph", node=node,
+            status=service.status(),
+        )
+
+    @app.get("/quality", response_class=HTMLResponse)
+    def quality_page(request: Request, period_days: int = Query(default=30, ge=1, le=3650)):
+        return render(
+            request, "quality_overview.html", "quality",
+            quality=service.quality_summary(period_days), status=service.status(),
+        )
+
+    @app.get("/quality/signals/{signal_id}", response_class=HTMLResponse)
+    def quality_signal_page(request: Request, signal_id: int):
+        quality = service.signal_quality(signal_id)
+        if quality is None:
+            raise HTTPException(status_code=404, detail="Signal not found")
+        return render(
+            request, "quality_signal.html", "quality", quality=quality,
+            status=service.status(),
+        )
+
+    def quality_entity_page(request: Request, entity_type: str, title: str):
+        return render(
+            request, "quality_entities.html", "quality", title=title,
+            entity_type=entity_type, rows=service.quality_entities(entity_type),
+            status=service.status(),
+        )
+
+    @app.get("/quality/sources", response_class=HTMLResponse)
+    def quality_sources_page(request: Request):
+        return quality_entity_page(request, "source", "Source Quality")
+
+    @app.get("/quality/rules", response_class=HTMLResponse)
+    def quality_rules_page(request: Request):
+        return quality_entity_page(request, "rule", "Rule Quality")
+
+    @app.get("/quality/watchlists", response_class=HTMLResponse)
+    def quality_watchlists_page(request: Request):
+        return quality_entity_page(request, "watchlist", "Watchlist Quality")
+
+    @app.get("/quality/ai", response_class=HTMLResponse)
+    def quality_ai_page(request: Request):
+        return render(
+            request, "quality_entities.html", "quality", title="AI Quality",
+            entity_type="ai", rows=service.quality_ai(), status=service.status(),
+        )
+
+    @app.get("/quality/narratives", response_class=HTMLResponse)
+    def quality_narratives_page(request: Request):
+        return quality_entity_page(request, "narrative", "Narrative Quality")
+
+    @app.get("/quality/tokens", response_class=HTMLResponse)
+    def quality_tokens_page(request: Request):
+        return quality_entity_page(request, "token", "Token Quality")
+
+    @app.get("/quality/recommendations", response_class=HTMLResponse)
+    def quality_recommendations_page(request: Request):
+        recommendations = service.quality_recommendations()
+        severity_counts = {
+            severity: sum(item["severity"] == severity for item in recommendations)
+            for severity in ("high", "medium", "low")
+        }
+        return render(
+            request, "quality_recommendations.html", "quality",
+            recommendations=recommendations, severity_counts=severity_counts,
             status=service.status(),
         )
 
@@ -945,6 +1043,126 @@ def create_app(
     @app.get("/api/graph/validate")
     def validate_graph_api():
         return service.validate_graph()
+
+    @app.get("/api/quality/summary")
+    def quality_summary_api(period_days: int = Query(default=30, ge=1, le=3650)):
+        return service.quality_summary(period_days)
+
+    @app.get("/api/quality/signals")
+    def quality_signals_api(
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+        classification: str | None = Query(
+            default=None,
+            pattern="^(excellent|strong|moderate|weak|unreliable|insufficient_data)$",
+        ),
+        calculation_version: int | None = Query(default=None, ge=1),
+        from_date: str | None = None,
+        to_date: str | None = None,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
+        source: str | None = None,
+        rule: str | None = None,
+        watchlist: str | None = None,
+        ai_provider: str | None = None,
+        model: str | None = None,
+    ):
+        valid_date_range(from_date, to_date)
+        selected = [(entity_type, entity_id), ("source", source), ("rule", rule),
+                    ("watchlist", watchlist), ("ai_provider", ai_provider),
+                    ("ai_model", model)]
+        active = [(kind, value) for kind, value in selected if value is not None]
+        if len(active) > 1:
+            raise HTTPException(status_code=422, detail="Use one entity filter at a time")
+        kind, value = active[0] if active else (None, None)
+        try:
+            return service.quality_signals(
+                limit=limit, offset=offset, classification=classification,
+                calculation_version=calculation_version, from_date=from_date,
+                to_date=to_date, entity_type=kind, entity_id=value,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/quality/signals/{signal_id}")
+    def quality_signal_api(signal_id: int):
+        quality = service.signal_quality(signal_id)
+        if quality is None:
+            raise HTTPException(status_code=404, detail="Signal not found")
+        return quality
+
+    def quality_entity_api(entity_type: str, period_days: int, minimum_sample: int):
+        return {"items": service.quality_entities(entity_type, period_days, minimum_sample)}
+
+    @app.get("/api/quality/sources")
+    def quality_sources_api(
+        period_days: int = Query(default=30, ge=1, le=3650),
+        minimum_sample: int = Query(default=0, ge=0),
+    ):
+        return quality_entity_api("source", period_days, minimum_sample)
+
+    @app.get("/api/quality/rules")
+    def quality_rules_api(
+        period_days: int = Query(default=30, ge=1, le=3650),
+        minimum_sample: int = Query(default=0, ge=0),
+    ):
+        return quality_entity_api("rule", period_days, minimum_sample)
+
+    @app.get("/api/quality/watchlists")
+    def quality_watchlists_api(
+        period_days: int = Query(default=30, ge=1, le=3650),
+        minimum_sample: int = Query(default=0, ge=0),
+    ):
+        return quality_entity_api("watchlist", period_days, minimum_sample)
+
+    @app.get("/api/quality/narratives")
+    def quality_narratives_api(
+        period_days: int = Query(default=30, ge=1, le=3650),
+        minimum_sample: int = Query(default=0, ge=0),
+    ):
+        return quality_entity_api("narrative", period_days, minimum_sample)
+
+    @app.get("/api/quality/tokens")
+    def quality_tokens_api(
+        period_days: int = Query(default=30, ge=1, le=3650),
+        minimum_sample: int = Query(default=0, ge=0),
+    ):
+        return quality_entity_api("token", period_days, minimum_sample)
+
+    @app.get("/api/quality/ai")
+    def quality_ai_api(period_days: int = Query(default=30, ge=1, le=3650)):
+        return {"items": service.quality_ai(period_days)}
+
+    @app.get("/api/quality/recommendations")
+    def quality_recommendations_api(
+        recommendation_status: str | None = Query(
+            default=None, alias="status",
+            pattern="^(open|acknowledged|resolved|dismissed)$",
+        ),
+        limit: int = Query(default=100, ge=1, le=500),
+    ):
+        return {"items": service.quality_recommendations(recommendation_status, limit)}
+
+    @app.put("/api/quality/recommendations/{recommendation_id}")
+    def quality_recommendation_update_api(
+        recommendation_id: int, payload: QualityRecommendationUpdatePayload,
+    ):
+        try:
+            return service.update_quality_recommendation(recommendation_id, payload.status)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Recommendation not found") from exc
+
+    @app.post("/api/quality/recalculate")
+    def quality_recalculate_api(payload: QualityRecalculatePayload):
+        if bool(payload.entity_type) != bool(payload.entity_id):
+            raise HTTPException(
+                status_code=422, detail="entity_type and entity_id must be supplied together"
+            )
+        return service.recalculate_quality(payload.model_dump())
+
+    @app.get("/api/quality/validate")
+    def quality_validate_api():
+        return service.validate_quality()
 
     return app
 

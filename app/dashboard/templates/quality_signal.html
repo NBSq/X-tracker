@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Signal Quality {{ quality.signal_id }}{% endblock %}
+{% block heading %}Signal Quality Details{% endblock %}
+{% block content %}
+<nav class="quality-tabs mb-4"><a href="/quality">Overview</a><a class="active" href="/quality/signals/{{ quality.signal_id }}">Signal {{ quality.signal_id }}</a></nav>
+<section class="outcome-strip mb-5">
+  <div><strong>{{ '%.1f'|format(quality.quality_score) }}</strong><span>Quality score</span></div>
+  <div><strong>{{ quality.classification|replace('_', ' ')|title }}</strong><span>Classification</span></div>
+  <div><strong>{{ quality.evidence_count }}</strong><span>Evidence count</span></div>
+  <div><strong>v{{ quality.calculation_version }}</strong><span>Calculation version</span></div>
+</section>
+<div class="quality-layout">
+  <section class="dashboard-section"><div class="section-heading"><h2>Quality breakdown</h2></div><div class="quality-bars">
+    {% for name, value in quality.breakdown.items() if name != 'details' %}
+    <div><span>{{ name|replace('_', ' ')|title }}</span>{% if value is not none %}<i style="--quality-width: {{ value }}%"></i><b>{{ '%.1f'|format(value) }}</b>{% else %}<i style="--quality-width: 0%"></i><b>n/a</b>{% endif %}</div>
+    {% endfor %}
+  </div></section>
+  <section class="dashboard-section"><div class="section-heading"><h2>Evidence</h2></div><dl class="detail-list">
+    {% for name, value in quality.breakdown.details.items() %}<div><dt>{{ name|replace('_', ' ')|title }}</dt><dd>{{ value }}</dd></div>{% endfor %}
+  </dl></section>
+</div>
+{% endblock %}

@@ -38,6 +38,14 @@ RULE_FIELDS = frozenset(
         "source_diversity",
         "connected_narrative_count",
         "connected_token_count",
+        "signal_quality_score",
+        "quality_classification",
+        "source_reliability",
+        "evidence_strength",
+        "confidence_calibration",
+        "noise_risk",
+        "evaluation_coverage",
+        "rule_priority",
     }
 )
 ALERT_ACTIONS = frozenset(
@@ -78,8 +86,15 @@ AI_RULE_FIELDS = frozenset(
         "ai_fallback_used",
     }
 )
+QUALITY_RULE_FIELDS = frozenset(
+    {
+        "signal_quality_score", "quality_classification", "source_reliability",
+        "evidence_strength", "confidence_calibration", "noise_risk",
+        "evaluation_coverage",
+    }
+)
 _TEXT_FIELDS = frozenset(
-    {"token", "narrative", "watchlist", "ai_action", "ai_risk_level"}
+    {"token", "narrative", "watchlist", "ai_action", "ai_risk_level", "quality_classification"}
 )
 _BOOLEAN_FIELDS = frozenset(
     {
@@ -126,6 +141,14 @@ class SignalFacts:
     source_diversity: int = 0
     connected_narrative_count: int = 0
     connected_token_count: int = 0
+    signal_quality_score: float = 0.0
+    quality_classification: str | None = None
+    source_reliability: float = 0.0
+    evidence_strength: float = 0.0
+    confidence_calibration: float = 0.0
+    noise_risk: float = 0.0
+    evaluation_coverage: float = 0.0
+    rule_priority: int = 0
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "SignalFacts":
@@ -202,6 +225,14 @@ class SignalFacts:
                     "connected_token_count",
                 )
             ),
+            signal_quality_score=_number(value.get("signal_quality_score", 0), "signal_quality_score"),
+            quality_classification=_optional_text(value.get("quality_classification")),
+            source_reliability=_number(value.get("source_reliability", 0), "source_reliability"),
+            evidence_strength=_number(value.get("evidence_strength", 0), "evidence_strength"),
+            confidence_calibration=_number(value.get("confidence_calibration", 0), "confidence_calibration"),
+            noise_risk=_number(value.get("noise_risk", 0), "noise_risk"),
+            evaluation_coverage=_number(value.get("evaluation_coverage", 0), "evaluation_coverage"),
+            rule_priority=int(_number(value.get("rule_priority", 0), "rule_priority")),
         )
 
     def value_for(self, field: str) -> Any:
@@ -378,6 +409,18 @@ def condition_uses_ai(condition: dict[str, Any]) -> bool:
     if logical == "NOT":
         return condition_uses_ai(condition[key])
     return str(condition.get("field", "")).strip().lower() in AI_RULE_FIELDS
+
+
+def condition_uses_quality(condition: dict[str, Any]) -> bool:
+    key = next(iter(condition), None)
+    if key is None:
+        return False
+    logical = str(key).upper()
+    if logical in {"AND", "OR"}:
+        return any(condition_uses_quality(item) for item in condition[key])
+    if logical == "NOT":
+        return condition_uses_quality(condition[key])
+    return str(condition.get("field", "")).strip().lower() in QUALITY_RULE_FIELDS
 
 
 def _compare_text(actual: Any, operator: str, expected: Any) -> bool:

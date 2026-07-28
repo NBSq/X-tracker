@@ -20,6 +20,7 @@ The project supports real APIs, public RSS feeds, and a fully local mock-AI work
 - Explore signals and performance in the built-in FastAPI analytics dashboard
 - Route new signals through configurable smart alert rules
 - Explore deterministic token, narrative, event, source, watchlist, and rule relationships
+- Score signal evidence, calibration, reliability, timeliness, noise, and evaluation coverage
 - Run a complete local MVP without X or OpenAI credentials
 
 ## Screenshots
@@ -77,7 +78,10 @@ flowchart LR
     Bus --> Rules["Smart Alert Rule Engine"]
     Bus --> Watchlists["Watchlist Matcher"]
     Bus --> Graph["Relationship Graph Service"]
+    Bus --> Quality["Signal Quality Service"]
     Graph --> GraphDB[("Graph Projection + Snapshots")]
+    Quality --> QualityDB[("Versioned Scores + Aggregates + Recommendations")]
+    QualityDB --> Dashboard
     GraphDB --> Dashboard
     Watchlists -->|WatchlistMatched| Bus
     Watchlists --> Focused["Focused Alerts / Associations"]
@@ -126,6 +130,10 @@ The application uses a synchronous, typed, in-process event bus with no external
 | `GraphUpdated` | An incremental graph projection changes | Dashboard/API extension point |
 | `EmergingRelationshipDetected` | A relationship crosses the accelerating threshold | Alerting and analytics extension point |
 | `GraphSnapshotCreated` | A daily, weekly, or monthly snapshot is persisted | Historical graph analytics extension point |
+| `SignalQualityCalculated` | A versioned explainable signal score is saved | Quality-aware rules and dashboard refresh state |
+| `QualityAggregateUpdated` | An entity-period quality aggregate is saved | Reporting and future automation adapters |
+| `QualityDegradationDetected` / `QualityImprovementDetected` | Equivalent periods differ beyond the configured significance | Operational observability |
+| `QualityRecommendationCreated` | A deterministic quality issue is first persisted for a period | Recommendation workflow adapters |
 
 The bus is intentionally transport-neutral. Future Dashboard, REST API, websocket, or audit-log adapters can subscribe without changing scoring and analysis code. Existing public helpers remain callable without supplying a bus; they create and register the default subscribers automatically.
 
@@ -937,6 +945,111 @@ Create a second task with:
 - Program: `<PROJECT_DIR>\scripts\run_daily_digest.bat`
 - Trigger: daily at the preferred morning time
 - Setting: **Run task as soon as possible after a scheduled start is missed**
+
+## Signal Quality Analytics
+
+Signal Quality Analytics measures how well a tracker signal is supported, calibrated, timely, and subsequently validated. It reuses saved signal and outcome IDs; it is not a second outcomes engine. Every result includes the complete deterministic breakdown and `QUALITY_CALCULATION_VERSION`, so a future formula can be recalculated without silently changing the meaning of version 1 records.
+
+### Formula and dimensions
+
+The final score is the weighted mean of available dimensions, bounded to 0-100:
+
+```text
+quality = sum(available_dimension_score * configured_weight)
+          / sum(available_configured_weights)
+```
+
+Version 1 weights are outcome quality 25%, confidence calibration 15%, source reliability 15%, evidence strength 10%, source diversity 10%, timeliness 10%, rule precision 5%, watchlist relevance 5%, and AI agreement 5%. Missing dimensions are excluded and the remaining weights are normalized; missing evidence is never converted to a zero. Duplicate reduction value, noise risk, and evaluation coverage are reported separately because they describe processing value, risk, and observability rather than positive signal evidence.
+
+Evidence strength combines unique source, raw item, author, source-priority, supporting-factor, matched-entity, and material-update evidence. Conflicts impose a bounded penalty, so article volume alone cannot create a strong score. Timeliness uses publication, fetch, event-first-seen, and signal timestamps; missing publication times remain unavailable.
+
+| Score | Classification |
+| --- | --- |
+| 85-100 | Excellent |
+| 70-84.99 | Strong |
+| 55-69.99 | Moderate |
+| 40-54.99 | Weak |
+| 0-39.99 | Unreliable |
+
+`insufficient_data` is used when the configured minimum evidence or available-dimension requirement is not met. Thresholds and weights are validated at startup.
+
+### Reliability, calibration, noise, and coverage
+
+Source reliability combines outcome history, fetch success, duplicate behavior, malformed-content rate, event conflicts, and ingestion timeliness. Outcome and fetch rates use five observations of prior strength, preventing a source with one success from ranking first automatically. Sources remain marked as collecting evidence until `QUALITY_MINIMUM_SAMPLE_SIZE` evaluated signals exist.
+
+Confidence is mapped deterministically from the stored 1-10 scale to probability by `confidence / 10`. `SUCCESS`, `NEUTRAL`, and `FAILED` map to actual values `1.0`, `0.5`, and `0.0`. Reports expose absolute calibration error, a Brier-style score, and overconfidence or underconfidence when the probability differs from the actual value by at least `0.25`. Historical confidence is never rewritten.
+
+Noise is separated into confirmed noise, probable noise, unevaluated, and not-noise states. Failed outcomes are confirmed noise. Small neutral movement and combinations of weak evidence, one source, conflicts, no watchlist match, or low AI confidence can indicate probable noise. An unevaluated signal is not automatically treated as noise or failure. Evaluation coverage is `evaluated eligible signals / eligible signals`; low coverage marks precision and rankings as less reliable.
+
+Mock AI and OpenAI analyses are compared only when both already exist. Agreement uses action, risk, confidence distance, related token and narrative overlap, and supporting-factor overlap. The tracker never calls OpenAI solely to compute agreement and will not rank providers or models below the minimum sample size.
+
+### Recommendations and entity analytics
+
+Quality aggregates compare sources, rules, watchlists, AI providers/models, narratives, tokens, signal types, unified graph entities, and the overall system. Rule reports include precision, noise, source diversity, watchlist overlap, and other-rule overlap. Watchlist reports include activity, outcome quality, hype, momentum, entity diversity, and rule overlap. Token and narrative reports include graph centrality and emerging relationships while retaining original graph weights separately from reliability-adjusted metrics.
+
+Recommendations are deterministic and operational: collect more outcomes, review noisy rules, split broad watchlists, investigate unreliable sources, improve timeliness, or review overconfident configuration. They never disable a rule or make a trading recommendation. Statuses are `open`, `acknowledged`, `resolved`, and `dismissed`; an open issue is generated at most once for the same entity, recommendation type, and calculation period.
+
+### Quality CLI
+
+```powershell
+python -m app.main --quality-summary
+python -m app.main --quality-signal 42
+python -m app.main --quality-sources
+python -m app.main --quality-rules
+python -m app.main --quality-watchlists
+python -m app.main --quality-narratives
+python -m app.main --quality-tokens
+python -m app.main --quality-ai
+python -m app.main --quality-recommendations
+python -m app.main --quality-recalculate --quality-period-days 30
+python -m app.main --quality-recalculate --quality-entity source 3 --quality-version 1
+python -m app.main --quality-validate
+```
+
+Recalculation upserts by signal and calculation version and is idempotent. Use `--quality-entity TYPE ID`, `--quality-period-days DAYS`, and `--quality-version VERSION` to narrow it.
+
+### Quality dashboard and API
+
+Run `python -m app.main --dashboard`, then open `/quality`. The dashboard includes Overview, Signal Details, Source Quality, Rule Quality, Watchlist Quality, AI Quality, Narrative Quality, Token Quality, and Recommendations. It shows score and classification distributions, period quality/precision/noise/coverage/calibration comparisons, entity comparisons, confidence calibration evidence, and recommendation severity.
+
+REST endpoints:
+
+```text
+GET  /api/quality/summary
+GET  /api/quality/signals
+GET  /api/quality/signals/{signal_id}
+GET  /api/quality/sources
+GET  /api/quality/rules
+GET  /api/quality/watchlists
+GET  /api/quality/narratives
+GET  /api/quality/tokens
+GET  /api/quality/ai
+GET  /api/quality/recommendations
+PUT  /api/quality/recommendations/{id}
+POST /api/quality/recalculate
+GET  /api/quality/validate
+```
+
+Signal queries support date, classification, entity, source, rule, watchlist, provider, model, calculation-version, limit, and offset filters. Invalid limits, dates, statuses, and recalculation payloads return validation errors.
+
+### Quality CSV exports
+
+```powershell
+python -m app.main --export-signal-quality-csv
+python -m app.main --export-source-quality-csv
+python -m app.main --export-rule-quality-csv
+python -m app.main --export-watchlist-quality-csv
+python -m app.main --export-ai-quality-csv
+python -m app.main --export-quality-recommendations-csv
+```
+
+These produce `signal_quality_*`, `source_quality_*`, `rule_quality_*`, `watchlist_quality_*`, `ai_quality_*`, and `quality_recommendations_*` files in `exports/`. They reuse collision-safe filenames, deterministic columns, CSV quoting, date filters where records have timestamps, and UTF-8 BOM encoding for Excel.
+
+### Quality configuration
+
+The `.env.example` lists every quality setting. `QUALITY_WEIGHT_*` controls formula weights; `QUALITY_*_THRESHOLD` controls classifications; `QUALITY_TIMELINESS_*_MINUTES` controls timeliness; `QUALITY_MINIMUM_EVIDENCE` and `QUALITY_MINIMUM_SAMPLE_SIZE` control sufficiency; `QUALITY_CHANGE_SIGNIFICANCE` controls improved/stable/degraded period labels.
+
+Quality scores are internal analytical metrics, not predictions of token price or guaranteed investment performance. Small samples are unreliable, correlation does not imply causation, and outcome continuation does not measure trading profitability.
 
 ## Testing
 

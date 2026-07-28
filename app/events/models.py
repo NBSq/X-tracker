@@ -267,3 +267,41 @@ class EmergingRelationshipDetected:
 class GraphSnapshotCreated:
     snapshot_id: int
     frequency: str
+
+
+@dataclass(frozen=True)
+class SignalQualityCalculated:
+    signal_id: int
+    quality_score: float
+    classification: str
+    calculation_version: int
+
+
+@dataclass(frozen=True)
+class QualityAggregateUpdated:
+    entity_type: str
+    entity_id: str
+    average_quality_score: float | None
+    calculation_version: int
+
+
+@dataclass(frozen=True)
+class QualityDegradationDetected:
+    entity_type: str
+    entity_id: str
+    change: float
+
+
+@dataclass(frozen=True)
+class QualityImprovementDetected:
+    entity_type: str
+    entity_id: str
+    change: float
+
+
+@dataclass(frozen=True)
+class QualityRecommendationCreated:
+    recommendation_id: int
+    entity_type: str
+    entity_id: str
+    severity: str

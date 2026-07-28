@@ -382,6 +382,88 @@ class Database:
                 UNIQUE (period_start, period_end)
             );
 
+            CREATE TABLE IF NOT EXISTS signal_quality_scores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id INTEGER NOT NULL,
+                quality_score REAL NOT NULL CHECK(quality_score BETWEEN 0 AND 100),
+                classification TEXT NOT NULL CHECK(classification IN (
+                    'excellent', 'strong', 'moderate', 'weak', 'unreliable',
+                    'insufficient_data'
+                )),
+                outcome_quality REAL,
+                confidence_calibration REAL,
+                source_reliability REAL,
+                evidence_strength REAL,
+                source_diversity REAL,
+                timeliness REAL,
+                rule_precision REAL,
+                watchlist_relevance REAL,
+                ai_agreement REAL,
+                noise_risk REAL NOT NULL CHECK(noise_risk BETWEEN 0 AND 100),
+                evaluation_coverage REAL CHECK(
+                    evaluation_coverage IS NULL OR evaluation_coverage BETWEEN 0 AND 100
+                ),
+                evidence_count INTEGER NOT NULL DEFAULT 0,
+                calculation_version INTEGER NOT NULL,
+                breakdown_json TEXT NOT NULL,
+                calculated_at TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (signal_id) REFERENCES signal_history(id),
+                UNIQUE (signal_id, calculation_version)
+            );
+
+            CREATE TABLE IF NOT EXISTS quality_aggregates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                signal_count INTEGER NOT NULL DEFAULT 0,
+                evaluated_count INTEGER NOT NULL DEFAULT 0,
+                successful_count INTEGER NOT NULL DEFAULT 0,
+                neutral_count INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                average_quality_score REAL,
+                median_quality_score REAL,
+                precision REAL CHECK(precision IS NULL OR precision BETWEEN 0 AND 100),
+                noise_rate REAL CHECK(noise_rate IS NULL OR noise_rate BETWEEN 0 AND 100),
+                evaluation_coverage REAL CHECK(
+                    evaluation_coverage IS NULL OR evaluation_coverage BETWEEN 0 AND 100
+                ),
+                average_confidence REAL,
+                calibration_error REAL,
+                reliability_score REAL,
+                calculation_version INTEGER NOT NULL,
+                metrics_json TEXT NOT NULL,
+                calculated_at TEXT NOT NULL,
+                UNIQUE (
+                    entity_type, entity_id, period_start, period_end,
+                    calculation_version
+                )
+            );
+
+            CREATE TABLE IF NOT EXISTS quality_recommendations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                recommendation_type TEXT NOT NULL,
+                severity TEXT NOT NULL CHECK(severity IN ('low', 'medium', 'high')),
+                title TEXT NOT NULL,
+                description TEXT NOT NULL,
+                suggested_action TEXT NOT NULL,
+                confidence REAL NOT NULL CHECK(confidence BETWEEN 0 AND 100),
+                minimum_sample_requirement INTEGER NOT NULL DEFAULT 0,
+                evidence_json TEXT NOT NULL,
+                period_key TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open' CHECK(
+                    status IN ('open', 'acknowledged', 'resolved', 'dismissed')
+                ),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                resolved_at TEXT,
+                UNIQUE (entity_type, entity_id, recommendation_type, period_key)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_signal_outcomes_signal_id
             ON signal_outcomes(signal_id);
 
@@ -459,6 +541,18 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_graph_snapshots_period
             ON graph_snapshots(period_end DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_signal_quality_score
+            ON signal_quality_scores(quality_score DESC, calculated_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_signal_quality_classification
+            ON signal_quality_scores(classification, calculation_version);
+
+            CREATE INDEX IF NOT EXISTS idx_quality_aggregates_entity_period
+            ON quality_aggregates(entity_type, entity_id, period_end DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_quality_recommendations_status
+            ON quality_recommendations(status, severity, created_at DESC);
             """
         )
         self._add_column_if_missing("signal_history", "mentions_count", "INTEGER")
@@ -534,6 +628,9 @@ class Database:
         )
 
     def reset(self) -> None:
+        self.connection.execute("DELETE FROM quality_recommendations")
+        self.connection.execute("DELETE FROM quality_aggregates")
+        self.connection.execute("DELETE FROM signal_quality_scores")
         self.connection.execute("DELETE FROM graph_snapshots")
         self.connection.execute("DELETE FROM graph_edges")
         self.connection.execute("DELETE FROM graph_nodes")
@@ -774,9 +871,17 @@ class Database:
         return self.connection.execute(
             f"""
             SELECT analysis.*, signal.token, signal.narrative,
-                   signal.hype_score, signal.momentum_score
+                   signal.hype_score, signal.momentum_score,
+                   usage.latency_ms
             FROM signal_ai_analyses AS analysis
             JOIN signal_history AS signal ON signal.id = analysis.signal_id
+            LEFT JOIN ai_usage AS usage ON usage.id = (
+                SELECT candidate.id FROM ai_usage AS candidate
+                WHERE candidate.signal_id = analysis.signal_id
+                  AND candidate.provider = analysis.provider
+                  AND candidate.model = analysis.model
+                ORDER BY candidate.id DESC LIMIT 1
+            )
             {provider_filter}
             ORDER BY analysis.created_at DESC, analysis.id DESC LIMIT ?
             """,
@@ -3162,6 +3267,296 @@ class Database:
         )
         self.connection.commit()
         return int(cursor.rowcount)
+
+    def save_signal_quality_score(self, values: dict[str, Any]) -> int:
+        columns = (
+            "signal_id", "quality_score", "classification", "outcome_quality",
+            "confidence_calibration", "source_reliability", "evidence_strength",
+            "source_diversity", "timeliness", "rule_precision",
+            "watchlist_relevance", "ai_agreement", "noise_risk",
+            "evaluation_coverage", "evidence_count", "calculation_version",
+            "breakdown_json", "calculated_at",
+        )
+        placeholders = ", ".join("?" for _ in columns)
+        updates = ", ".join(
+            f"{column} = excluded.{column}" for column in columns
+            if column not in {"signal_id", "calculation_version"}
+        )
+        self.connection.execute(
+            f"""
+            INSERT INTO signal_quality_scores ({', '.join(columns)})
+            VALUES ({placeholders})
+            ON CONFLICT(signal_id, calculation_version) DO UPDATE SET
+                {updates}, updated_at = CURRENT_TIMESTAMP
+            """,
+            tuple(values.get(column) for column in columns),
+        )
+        self.connection.commit()
+        row = self.get_signal_quality_score(
+            int(values["signal_id"]), int(values["calculation_version"])
+        )
+        if row is None:
+            raise RuntimeError("Signal quality score could not be persisted")
+        return int(row["id"])
+
+    def get_signal_quality_score(
+        self, signal_id: int, calculation_version: int | None = None,
+    ) -> sqlite3.Row | None:
+        condition = "AND score.calculation_version = ?" if calculation_version else ""
+        parameters: tuple[object, ...] = (
+            (signal_id, calculation_version) if calculation_version else (signal_id,)
+        )
+        return self.connection.execute(
+            f"""
+            SELECT score.*, signal.signal_type, signal.token, signal.narrative,
+                   signal.hype_score, signal.momentum_score, signal.confidence,
+                   signal.action, signal.mentions_count, signal.timestamp
+            FROM signal_quality_scores AS score
+            JOIN signal_history AS signal ON signal.id = score.signal_id
+            WHERE score.signal_id = ? {condition}
+            ORDER BY score.calculation_version DESC LIMIT 1
+            """,
+            parameters,
+        ).fetchone()
+
+    def get_signal_quality_scores(
+        self,
+        *,
+        limit: int | None = 100,
+        classification: str | None = None,
+        calculation_version: int | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        signal_ids: list[int] | None = None,
+    ) -> list[sqlite3.Row]:
+        conditions: list[str] = []
+        parameters: list[object] = []
+        if classification:
+            conditions.append("score.classification = ?")
+            parameters.append(classification)
+        if calculation_version:
+            conditions.append("score.calculation_version = ?")
+            parameters.append(calculation_version)
+        if signal_ids is not None:
+            if not signal_ids:
+                return []
+            conditions.append(f"score.signal_id IN ({','.join('?' for _ in signal_ids)})")
+            parameters.extend(signal_ids)
+        self._append_date_filters(
+            conditions, parameters, "score.calculated_at", from_date, to_date
+        )
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = "LIMIT ?"
+            parameters.append(max(1, min(limit, 5000)))
+        return self.connection.execute(
+            f"""
+            SELECT score.*, signal.signal_type, signal.token, signal.narrative,
+                   signal.hype_score, signal.momentum_score, signal.confidence,
+                   signal.action, signal.mentions_count, signal.timestamp,
+                   outcome.status AS outcome_status
+            FROM signal_quality_scores AS score
+            JOIN signal_history AS signal ON signal.id = score.signal_id
+            LEFT JOIN signal_outcomes AS outcome ON outcome.id = (
+                SELECT latest.id FROM signal_outcomes AS latest
+                WHERE latest.signal_id = signal.id
+                ORDER BY latest.evaluation_window_hours DESC, latest.id DESC LIMIT 1
+            )
+            {where}
+            ORDER BY score.calculated_at DESC, score.id DESC {limit_clause}
+            """,
+            parameters,
+        ).fetchall()
+
+    def get_signal_quality_context(self, signal_id: int) -> sqlite3.Row | None:
+        return self.connection.execute(
+            """
+            SELECT signal.*, event.title AS event_title,
+                   event.first_seen_at AS event_first_seen_at,
+                   event.last_seen_at AS event_last_seen_at,
+                   event.source_count, event.item_count, event.duplicate_count,
+                   event.highest_source_priority, event.conflict_count,
+                   event.requires_review, event.material_version
+            FROM signal_history AS signal
+            LEFT JOIN unified_events AS event ON event.id = signal.unified_event_id
+            WHERE signal.id = ?
+            """,
+            (signal_id,),
+        ).fetchone()
+
+    def get_signal_quality_sources(self, signal_id: int) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT DISTINCT source.*, item.author, item.published_at, item.fetched_at,
+                   item.status AS content_status, event.conflict_count
+            FROM signal_history AS signal
+            JOIN unified_event_items AS association
+              ON association.unified_event_id = signal.unified_event_id
+            JOIN content_items AS item ON item.id = association.content_item_id
+            JOIN content_sources AS source ON source.id = item.source_id
+            JOIN unified_events AS event ON event.id = association.unified_event_id
+            WHERE signal.id = ?
+            ORDER BY source.priority DESC, source.id
+            """,
+            (signal_id,),
+        ).fetchall()
+
+    def get_signal_ai_analyses_for_signal(self, signal_id: int) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT analysis.*, usage.latency_ms
+            FROM signal_ai_analyses AS analysis
+            LEFT JOIN ai_usage AS usage ON usage.id = (
+                SELECT candidate.id FROM ai_usage AS candidate
+                WHERE candidate.signal_id = analysis.signal_id
+                  AND candidate.provider = analysis.provider
+                  AND candidate.model = analysis.model
+                ORDER BY candidate.id DESC LIMIT 1
+            )
+            WHERE analysis.signal_id = ?
+            ORDER BY analysis.created_at DESC, analysis.id DESC
+            """,
+            (signal_id,),
+        ).fetchall()
+
+    def get_source_quality_statistics(self, source_id: int) -> sqlite3.Row | None:
+        return self.connection.execute(
+            """
+            SELECT source.*,
+                   COUNT(DISTINCT signal.id) AS signal_count,
+                   COUNT(DISTINCT item.id) AS content_item_count,
+                   COUNT(DISTINCT CASE WHEN item.status = 'malformed' THEN item.id END) AS malformed_count,
+                   COUNT(DISTINCT outcome.id) AS evaluated_count,
+                   COUNT(DISTINCT CASE WHEN outcome.status = 'SUCCESS' THEN outcome.id END) AS successful_count,
+                   COUNT(DISTINCT CASE WHEN outcome.status = 'NEUTRAL' THEN outcome.id END) AS neutral_count,
+                   COUNT(DISTINCT CASE WHEN outcome.status = 'FAILED' THEN outcome.id END) AS failed_count,
+                   AVG(quality.quality_score) AS average_quality,
+                   AVG(CASE WHEN item.published_at IS NOT NULL THEN
+                       (julianday(item.fetched_at) - julianday(item.published_at)) * 1440
+                   END) AS average_ingestion_minutes,
+                   AVG(event.conflict_count > 0) * 100.0 AS conflict_rate
+            FROM content_sources AS source
+            LEFT JOIN content_items AS item ON item.source_id = source.id
+            LEFT JOIN unified_event_items AS membership ON membership.content_item_id = item.id
+            LEFT JOIN unified_events AS event ON event.id = membership.unified_event_id
+            LEFT JOIN signal_history AS signal ON signal.unified_event_id = event.id
+            LEFT JOIN signal_outcomes AS outcome ON outcome.id = (
+                SELECT latest.id FROM signal_outcomes AS latest
+                WHERE latest.signal_id = signal.id
+                ORDER BY latest.evaluation_window_hours DESC, latest.id DESC LIMIT 1
+            )
+            LEFT JOIN signal_quality_scores AS quality ON quality.id = (
+                SELECT latest_quality.id FROM signal_quality_scores AS latest_quality
+                WHERE latest_quality.signal_id = signal.id
+                ORDER BY latest_quality.calculation_version DESC LIMIT 1
+            )
+            WHERE source.id = ? GROUP BY source.id
+            """,
+            (source_id,),
+        ).fetchone()
+
+    def save_quality_aggregate(self, values: dict[str, Any]) -> int:
+        columns = (
+            "entity_type", "entity_id", "period_start", "period_end",
+            "signal_count", "evaluated_count", "successful_count", "neutral_count",
+            "failed_count", "average_quality_score", "median_quality_score",
+            "precision", "noise_rate", "evaluation_coverage", "average_confidence",
+            "calibration_error", "reliability_score", "calculation_version",
+            "metrics_json", "calculated_at",
+        )
+        updates = ", ".join(
+            f"{column} = excluded.{column}" for column in columns
+            if column not in {
+                "entity_type", "entity_id", "period_start", "period_end",
+                "calculation_version",
+            }
+        )
+        self.connection.execute(
+            f"""
+            INSERT INTO quality_aggregates ({', '.join(columns)})
+            VALUES ({','.join('?' for _ in columns)})
+            ON CONFLICT(
+                entity_type, entity_id, period_start, period_end, calculation_version
+            ) DO UPDATE SET {updates}
+            """,
+            tuple(values.get(column) for column in columns),
+        )
+        self.connection.commit()
+        row = self.connection.execute(
+            """
+            SELECT id FROM quality_aggregates WHERE entity_type = ? AND entity_id = ?
+              AND period_start = ? AND period_end = ? AND calculation_version = ?
+            """,
+            (
+                values["entity_type"], values["entity_id"], values["period_start"],
+                values["period_end"], values["calculation_version"],
+            ),
+        ).fetchone()
+        return int(row["id"])
+
+    def get_quality_aggregates(
+        self, entity_type: str | None = None, limit: int = 500,
+    ) -> list[sqlite3.Row]:
+        where = "WHERE entity_type = ?" if entity_type else ""
+        parameters: list[object] = [entity_type] if entity_type else []
+        parameters.append(max(1, min(limit, 5000)))
+        return self.connection.execute(
+            f"""SELECT * FROM quality_aggregates {where}
+            ORDER BY period_end DESC, average_quality_score DESC, id DESC LIMIT ?""",
+            parameters,
+        ).fetchall()
+
+    def save_quality_recommendation(self, values: dict[str, Any]) -> tuple[int, bool]:
+        columns = (
+            "entity_type", "entity_id", "recommendation_type", "severity", "title",
+            "description", "suggested_action", "confidence",
+            "minimum_sample_requirement", "evidence_json", "period_key",
+        )
+        cursor = self.connection.execute(
+            f"""INSERT OR IGNORE INTO quality_recommendations ({', '.join(columns)})
+            VALUES ({','.join('?' for _ in columns)})""",
+            tuple(values.get(column) for column in columns),
+        )
+        self.connection.commit()
+        row = self.connection.execute(
+            """SELECT id FROM quality_recommendations
+            WHERE entity_type = ? AND entity_id = ? AND recommendation_type = ?
+              AND period_key = ?""",
+            (
+                values["entity_type"], values["entity_id"],
+                values["recommendation_type"], values["period_key"],
+            ),
+        ).fetchone()
+        return int(row["id"]), bool(cursor.rowcount)
+
+    def get_quality_recommendations(
+        self, status: str | None = None, limit: int = 500,
+    ) -> list[sqlite3.Row]:
+        where = "WHERE status = ?" if status else ""
+        parameters: list[object] = [status] if status else []
+        parameters.append(max(1, min(limit, 5000)))
+        return self.connection.execute(
+            f"""SELECT * FROM quality_recommendations {where}
+            ORDER BY CASE severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC,
+                     created_at DESC, id DESC LIMIT ?""",
+            parameters,
+        ).fetchall()
+
+    def update_quality_recommendation_status(self, recommendation_id: int, status: str) -> bool:
+        if status not in {"open", "acknowledged", "resolved", "dismissed"}:
+            raise ValueError("Invalid quality recommendation status")
+        resolved_at = (
+            datetime.now(timezone.utc).isoformat()
+            if status in {"resolved", "dismissed"} else None
+        )
+        cursor = self.connection.execute(
+            """UPDATE quality_recommendations SET status = ?, resolved_at = ?
+            WHERE id = ?""",
+            (status, resolved_at, recommendation_id),
+        )
+        self.connection.commit()
+        return bool(cursor.rowcount)
 
     def get_dashboard_status(self) -> dict[str, object]:
         return {

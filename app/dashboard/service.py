@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
+import json
 
 from app.analytics.historical import HistoricalAnalyticsService, HistoricalThresholds
 from app.ai.factory import create_signal_reasoning_service
@@ -17,6 +18,7 @@ from app.watchlists import WatchlistService
 from app.ingestion.models import SourceDefinition
 from app.ingestion.service import MultiSourceIngestionService
 from app.graph.service import GraphService
+from app.quality.service import SignalQualityService
 
 
 class DashboardService:
@@ -915,6 +917,128 @@ class DashboardService:
         finally:
             db.close()
 
+    def quality_summary(self, period_days: int = 30) -> dict[str, Any]:
+        db = self._database()
+        try:
+            return SignalQualityService(db, self.config).summary(period_days)
+        finally:
+            db.close()
+
+    def quality_signals(
+        self, *, limit: int = 100, offset: int = 0,
+        classification: str | None = None, calculation_version: int | None = None,
+        from_date: str | None = None, to_date: str | None = None,
+        entity_type: str | None = None, entity_id: str | None = None,
+    ) -> dict[str, Any]:
+        db = self._database()
+        try:
+            quality = SignalQualityService(db, self.config)
+            quality.calculate_missing(version=calculation_version)
+            signal_ids = (
+                quality.signal_ids(entity_type, entity_id)
+                if entity_type and entity_id else None
+            )
+            rows = db.get_signal_quality_scores(
+                limit=None, classification=classification,
+                calculation_version=calculation_version,
+                from_date=from_date, to_date=to_date, signal_ids=signal_ids,
+            )
+            return {
+                "items": [self._quality_row(row) for row in rows[offset:offset + limit]],
+                "total": len(rows), "limit": limit, "offset": offset,
+            }
+        finally:
+            db.close()
+
+    def signal_quality(self, signal_id: int) -> dict[str, Any] | None:
+        db = self._database()
+        try:
+            if db.get_signal(signal_id) is None:
+                return None
+            row = db.get_signal_quality_score(signal_id)
+            if row is None:
+                SignalQualityService(db, self.config).calculate_signal(signal_id)
+                row = db.get_signal_quality_score(signal_id)
+            return self._quality_row(row) if row is not None else None
+        finally:
+            db.close()
+
+    def quality_entities(
+        self, entity_type: str, period_days: int = 30, minimum_sample: int = 0,
+    ) -> list[dict[str, Any]]:
+        db = self._database()
+        try:
+            quality = SignalQualityService(db, self.config)
+            quality.calculate_missing()
+            return quality.entity_report(
+                entity_type, period_days=period_days, minimum_sample=minimum_sample,
+            )
+        finally:
+            db.close()
+
+    def quality_ai(self, period_days: int = 30) -> list[dict[str, Any]]:
+        db = self._database()
+        try:
+            quality = SignalQualityService(db, self.config)
+            quality.calculate_missing()
+            return quality.ai_report(period_days)
+        finally:
+            db.close()
+
+    def quality_recommendations(
+        self, recommendation_status: str | None = None, limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        db = self._database()
+        try:
+            return SignalQualityService(db, self.config).recommendations(
+                recommendation_status, limit,
+            )
+        finally:
+            db.close()
+
+    def update_quality_recommendation(self, recommendation_id: int, state: str) -> dict[str, Any]:
+        db = self._database()
+        try:
+            quality = SignalQualityService(db, self.config)
+            if not quality.update_recommendation(recommendation_id, state):
+                raise KeyError(recommendation_id)
+            return next(
+                dict(row) for row in db.get_quality_recommendations(limit=5000)
+                if int(row["id"]) == recommendation_id
+            )
+        finally:
+            db.close()
+
+    def recalculate_quality(self, payload: dict[str, Any]) -> dict[str, int]:
+        db = self._database()
+        try:
+            return SignalQualityService(db, self.config).recalculate(
+                signal_id=payload.get("signal_id"),
+                entity_type=payload.get("entity_type"),
+                entity_id=payload.get("entity_id"),
+                period_days=payload.get("period_days", 30),
+                version=payload.get("calculation_version"),
+            )
+        finally:
+            db.close()
+
+    def validate_quality(self) -> dict[str, Any]:
+        db = self._database()
+        try:
+            issues = SignalQualityService(db, self.config).validate()
+            return {"valid": not issues, "issue_count": len(issues), "issues": issues}
+        finally:
+            db.close()
+
+    @staticmethod
+    def _quality_row(row) -> dict[str, Any]:
+        item = dict(row)
+        try:
+            item["breakdown"] = json.loads(item.get("breakdown_json") or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            item["breakdown"] = {}
+        return item
+
     def _database(self) -> Database:
         db = Database(self.database_path)
         if (
@@ -922,6 +1046,7 @@ class DashboardService:
             or not db.has_table("watchlists")
             or not db.has_table("signal_ai_analyses")
             or not db.has_table("graph_nodes")
+            or not db.has_table("signal_quality_scores")
         ):
             db.initialize()
         return db
