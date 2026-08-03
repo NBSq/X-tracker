@@ -25,6 +25,8 @@ from app.events.models import (
     AIAnalysisFallbackUsed,
     AIAnalysisRequested,
 )
+from app.observability.metrics import metrics
+from app.observability.timing import record_timing
 
 
 logger = logging.getLogger("x_narrative_tracker")
@@ -86,6 +88,7 @@ class SignalReasoningService:
                 requested_at=datetime.now(timezone.utc),
             )
         )
+        metrics.increment("ai_requests_total")
         if provider == "mock":
             return self._run_mock(context)
         if self.openai_analyzer is None:
@@ -270,6 +273,13 @@ class SignalReasoningService:
         result = self.mock_analyzer.analyze_signal(context).model_copy(
             update={"fallback_used": fallback_used}
         )
+        latency = int((time.perf_counter() - started) * 1000)
+        record_timing(
+            "ai_analysis", latency,
+            threshold_ms=self.config.slow_ai_request_ms,
+            fields={"signal_id": context.signal_id},
+        )
+        metrics.record_success("ai_analysis")
         self._persist_result(context.signal_id, result)
         self.db.save_ai_usage(
             signal_id=context.signal_id,
@@ -279,7 +289,7 @@ class SignalReasoningService:
             fallback_used=fallback_used,
             input_size_estimate=len(context.model_dump_json()),
             output_size_estimate=len(result.model_dump_json()),
-            latency_ms=int((time.perf_counter() - started) * 1000),
+            latency_ms=latency,
             error_type=error_type,
         )
         self._publish(AIAnalysisCompleted(context.signal_id, result))
@@ -291,6 +301,7 @@ class SignalReasoningService:
         cache_key = _cache_key(context, self.openai_analyzer.model)
         cached = self.db.get_ai_cache(cache_key)
         if cached is not None:
+            metrics.increment("ai_cache_hits_total")
             result = SignalAnalysisResult.model_validate_json(cached["result_json"])
             result = result.model_copy(update={"cached": True})
             self._persist_result(context.signal_id, result)
@@ -318,6 +329,12 @@ class SignalReasoningService:
                 result = self.openai_analyzer.analyze_signal(context)
                 result = _normalize_result(result, context)
                 latency = int((time.perf_counter() - started) * 1000)
+                record_timing(
+                    "ai_analysis", latency,
+                    threshold_ms=self.config.slow_ai_request_ms,
+                    fields={"signal_id": context.signal_id},
+                )
+                metrics.record_success("ai_analysis")
                 usage = self.openai_analyzer.last_usage
                 self.db.save_ai_usage(
                     signal_id=context.signal_id,
@@ -345,6 +362,14 @@ class SignalReasoningService:
                 self._publish(AIAnalysisCompleted(context.signal_id, result))
                 return result
             except SignalProviderError as exc:
+                latency = int((time.perf_counter() - started) * 1000)
+                metrics.increment("ai_failures_total")
+                record_timing(
+                    "ai_analysis", latency,
+                    threshold_ms=self.config.slow_ai_request_ms,
+                    fields={"signal_id": context.signal_id},
+                )
+                metrics.record_error("ai_analysis", exc.error_type)
                 last_error = exc
                 logger.warning(
                     "OpenAI signal reasoning attempt failed signal=%s "
@@ -359,7 +384,7 @@ class SignalReasoningService:
                     model=self.openai_analyzer.model,
                     success=False,
                     input_size_estimate=len(context.model_dump_json()),
-                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    latency_ms=latency,
                     error_type=exc.error_type,
                 )
                 if not exc.transient or attempt >= self.config.openai_max_retries:
@@ -395,6 +420,7 @@ class SignalReasoningService:
                 input_size_estimate=len(context.model_dump_json()),
             )
         self._publish(AIAnalysisFallbackUsed(context.signal_id, reason))
+        metrics.increment("ai_fallbacks_total")
         return self._run_mock(context, fallback_used=True, error_type=reason)
 
     def _persist_result(self, signal_id: int, result: SignalAnalysisResult) -> None:

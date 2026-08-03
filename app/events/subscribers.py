@@ -30,6 +30,7 @@ from app.quality.service import SignalQualityService
 from app.rules.engine import RuleEngine
 from app.rules.models import condition_uses_quality
 from app.watchlists.service import WatchlistService
+from app.observability.timing import timed
 
 
 logger = logging.getLogger("x_narrative_tracker")
@@ -57,6 +58,7 @@ class SignalPerformanceTracker:
         self.db = db
         self.event_bus = event_bus
 
+    @timed("signal_creation")
     def __call__(self, event: SignalCreated) -> None:
         record = event.history_record()
         unified_event = self.db.find_unified_event_for_signal(
@@ -109,6 +111,7 @@ class WatchlistSignalMatcher:
         self.event_bus = event_bus
         self.watchlists = WatchlistService(db)
 
+    @timed("watchlist_matching")
     def __call__(self, event: SignalCreated) -> None:
         matches = self.watchlists.find_matching_watchlists(event)
         if not matches:

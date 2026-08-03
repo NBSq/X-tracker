@@ -464,6 +464,13 @@ class Database:
                 UNIQUE (entity_type, entity_id, recommendation_type, period_key)
             );
 
+            CREATE TABLE IF NOT EXISTS observability_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL UNIQUE,
+                metrics_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE INDEX IF NOT EXISTS idx_signal_outcomes_signal_id
             ON signal_outcomes(signal_id);
 
@@ -553,6 +560,9 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_quality_recommendations_status
             ON quality_recommendations(status, severity, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_observability_snapshots_timestamp
+            ON observability_snapshots(timestamp DESC);
             """
         )
         self._add_column_if_missing("signal_history", "mentions_count", "INTEGER")
@@ -631,6 +641,7 @@ class Database:
         self.connection.execute("DELETE FROM quality_recommendations")
         self.connection.execute("DELETE FROM quality_aggregates")
         self.connection.execute("DELETE FROM signal_quality_scores")
+        self.connection.execute("DELETE FROM observability_snapshots")
         self.connection.execute("DELETE FROM graph_snapshots")
         self.connection.execute("DELETE FROM graph_edges")
         self.connection.execute("DELETE FROM graph_nodes")
@@ -3557,6 +3568,37 @@ class Database:
         )
         self.connection.commit()
         return bool(cursor.rowcount)
+
+    def save_observability_snapshot(
+        self, timestamp: str, metrics: dict[str, Any],
+    ) -> int:
+        self.connection.execute(
+            """INSERT INTO observability_snapshots (timestamp, metrics_json)
+            VALUES (?, ?) ON CONFLICT(timestamp) DO UPDATE SET
+                metrics_json = excluded.metrics_json""",
+            (timestamp, json.dumps(metrics, sort_keys=True)),
+        )
+        self.connection.commit()
+        row = self.connection.execute(
+            "SELECT id FROM observability_snapshots WHERE timestamp = ?", (timestamp,)
+        ).fetchone()
+        return int(row["id"])
+
+    def get_observability_snapshots(self, limit: int = 200) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """SELECT * FROM observability_snapshots
+            ORDER BY timestamp DESC, id DESC LIMIT ?""",
+            (max(1, min(limit, 5000)),),
+        ).fetchall()
+
+    def cleanup_observability_snapshots(self, retention_days: int) -> int:
+        cursor = self.connection.execute(
+            """DELETE FROM observability_snapshots
+            WHERE datetime(timestamp) < datetime('now', ?)""",
+            (f"-{max(1, retention_days)} days",),
+        )
+        self.connection.commit()
+        return int(cursor.rowcount)
 
     def get_dashboard_status(self) -> dict[str, object]:
         return {

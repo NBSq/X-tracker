@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import platform
 import time
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Protocol
 
+from app import __version__
 from app.ai.analyzer import AnalysisResult, LocalAnalyzer, OpenAIAnalyzer, SpikeInsight
 from app.ai.factory import create_signal_reasoning_service
 from app.analytics.historical import (
@@ -72,6 +74,10 @@ from app.watchlists import (
 from app.sources.local_client import load_sample_posts
 from app.sources.rss_client import RSSClient, load_rss_feeds
 from app.sources.x_client import XClient, XPost
+from app.observability.context import correlation_scope
+from app.observability.health import HealthService, SnapshotService, format_performance_report as format_system_performance
+from app.observability.logging import configure_logging as configure_observability_logging, log_event
+from app.observability.metrics import metrics
 
 
 logger = logging.getLogger("x_narrative_tracker")
@@ -110,15 +116,13 @@ def iso_date(value: str) -> date:
         raise argparse.ArgumentTypeError("date must use YYYY-MM-DD format") from exc
 
 
-def configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s",
-    )
+def configure_logging(config: Config | None = None) -> None:
+    configure_observability_logging(config)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Track crypto narratives from X posts")
+    parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument(
         "--mode",
         choices=("live", "local", "rss"),
@@ -344,6 +348,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=8000,
         help="Dashboard port",
+    )
+    parser.add_argument(
+        "--health", action="store_true",
+        help="Print detailed system health as JSON",
+    )
+    parser.add_argument(
+        "--metrics-summary", action="store_true",
+        help="Print a compact runtime and component metrics summary",
+    )
+    parser.add_argument(
+        "--component-health", metavar="COMPONENT", nargs="?", const="all",
+        help="Print one component health check (or all components)",
     )
     parser.add_argument(
         "--ai-status",
@@ -1024,7 +1040,7 @@ def build_event_bus(
     *,
     force_mock_ai: bool = False,
 ) -> EventBus:
-    event_bus = EventBus()
+    event_bus = EventBus(config.slow_event_handler_ms if config is not None else 2000)
     reasoning = (
         create_signal_reasoning_service(
             db,
@@ -1044,7 +1060,10 @@ def build_telegram(config: Config, disabled: bool = False) -> TelegramAlerter | 
         logger.info("Telegram disabled by --no-telegram")
         return None
     if config.telegram_bot_token and config.telegram_chat_id:
-        return TelegramAlerter(config.telegram_bot_token, config.telegram_chat_id)
+        return TelegramAlerter(
+            config.telegram_bot_token, config.telegram_chat_id,
+            config.slow_telegram_send_ms,
+        )
     logger.info("Telegram not configured")
     return None
 
@@ -1825,7 +1844,6 @@ def run_ingestion_command(
 
 
 def main() -> None:
-    configure_logging()
     args = parse_args()
 
     try:
@@ -1833,6 +1851,14 @@ def main() -> None:
     except Exception:
         logger.exception("Startup failed")
         raise SystemExit(1)
+
+    configure_logging(config)
+    process_scope = correlation_scope()
+    process_scope.__enter__()
+    log_event(
+        logger, logging.INFO, "application_starting", "Application starting",
+        component="process", operation=args.mode,
+    )
 
     if args.dashboard:
         try:
@@ -1842,6 +1868,9 @@ def main() -> None:
         except Exception:
             logger.exception("Dashboard failed")
             raise SystemExit(1)
+        finally:
+            log_event(logger, logging.INFO, "application_stopped", "Application stopped", component="process")
+            process_scope.__exit__(None, None, None)
         return
 
     try:
@@ -1854,7 +1883,36 @@ def main() -> None:
         logger.exception("Startup failed")
         raise SystemExit(1)
 
+    logger.info(
+        "Startup diagnostics: version=%s python=%s database=%s sources=%d "
+        "ai_provider=%s telegram_configured=%s dashboard=%s mode=%s",
+        __version__, platform.python_version(), config.database_path,
+        len(db.get_content_sources(enabled=True)), config.ai_provider,
+        bool(config.telegram_bot_token and config.telegram_chat_id),
+        args.dashboard, args.mode,
+        extra={"event": "startup_diagnostics", "component": "process"},
+    )
+
     try:
+        health = HealthService(db, config)
+        if args.health:
+            logger.info("System health\n%s", json.dumps(health.detailed(), indent=2))
+            return
+        if args.component_health:
+            payload = health.detailed()
+            if args.component_health != "all":
+                component = payload["components"].get(args.component_health)
+                if component is None:
+                    raise ValueError(
+                        "Unknown component. Use configuration, database, sources, "
+                        "telegram, openai, event_bus, or process."
+                    )
+                payload = {"component": args.component_health, **component}
+            logger.info("Component health\n%s", json.dumps(payload, indent=2))
+            return
+        if args.metrics_summary:
+            logger.info("Metrics summary\n%s", json.dumps(health.metrics_summary(), indent=2))
+            return
         if args.clear_ai_cache:
             removed = db.clear_ai_cache()
             logger.info("AI cache cleared: %d entr%s", removed, "y" if removed == 1 else "ies")
@@ -1913,6 +1971,7 @@ def main() -> None:
             print_and_send_opportunity_report(db, build_telegram(config, args.no_telegram))
         elif args.performance_report:
             print_and_send_performance_report(db, build_telegram(config, args.no_telegram))
+            logger.info("\n%s", format_system_performance(health.performance_report()))
         elif args.evaluate_signals:
             evaluated = evaluate_signal_outcomes(config, db, build_event_bus(db))
             logger.info("Signal evaluation complete: %d outcome(s) saved", evaluated)
@@ -1941,7 +2000,21 @@ def main() -> None:
         logger.exception("%s mode failed", args.mode.capitalize())
         raise SystemExit(1)
     finally:
+        log_event(
+            logger, logging.INFO, "shutdown_starting",
+            "Application shutdown starting", component="process",
+        )
+        try:
+            SnapshotService(db, config).save_if_due(force=True)
+        except Exception:
+            logger.exception("Observability snapshot failed")
+        log_event(
+            logger, logging.INFO, "application_stopped", "Application stopped",
+            component="process",
+            duration_ms=round((time.time() - metrics.started_at) * 1000, 2),
+        )
         db.close()
+        process_scope.__exit__(None, None, None)
 
 
 if __name__ == "__main__":

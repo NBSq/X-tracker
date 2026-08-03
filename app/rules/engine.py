@@ -23,6 +23,8 @@ from app.rules.models import (
     normalize_actions,
     validate_condition,
 )
+from app.observability.metrics import metrics
+from app.observability.timing import timed
 
 
 logger = logging.getLogger("x_narrative_tracker")
@@ -144,6 +146,7 @@ class RuleEngine:
             return
         self.evaluate_saved_signal(signal_id)
 
+    @timed("rule_evaluation")
     def evaluate_saved_signal(self, signal_id: int) -> None:
         enabled_rules = self.rules.list_rules(enabled=True)
         if not enabled_rules:
@@ -236,6 +239,7 @@ class RuleEngine:
                 continue
             if self.rule_scope == "quality" and not uses_quality:
                 continue
+            metrics.increment("rule_evaluations_total")
             rule_facts = replace(facts, rule_priority=rule.priority)
             if not evaluate_condition(rule.condition, rule_facts):
                 continue

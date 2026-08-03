@@ -19,6 +19,7 @@ from app.ingestion.models import SourceDefinition
 from app.ingestion.service import MultiSourceIngestionService
 from app.graph.service import GraphService
 from app.quality.service import SignalQualityService
+from app.observability.health import HealthService, SnapshotService
 
 
 class DashboardService:
@@ -45,6 +46,44 @@ class DashboardService:
                 "last_analysis_at": row["last_analysis_at"],
                 "last_signal_at": row["last_signal_at"],
             }
+        finally:
+            db.close()
+
+    def system_health(self) -> dict[str, Any]:
+        db = self._database()
+        try:
+            return HealthService(db, self.config).detailed()
+        finally:
+            db.close()
+
+    def system_ready(self) -> tuple[dict[str, Any], int]:
+        db = self._database()
+        try:
+            return HealthService(db, self.config).ready()
+        finally:
+            db.close()
+
+    def system_performance(self) -> dict[str, Any]:
+        db = self._database()
+        try:
+            return HealthService(db, self.config).performance_report()
+        finally:
+            db.close()
+
+    def system_metrics_summary(self) -> dict[str, Any]:
+        db = self._database()
+        try:
+            health = HealthService(db, self.config)
+            result = health.metrics_summary()
+            result["history"] = SnapshotService(db, self.config).history(100)
+            return result
+        finally:
+            db.close()
+
+    def save_system_snapshot(self, *, force: bool = False) -> bool:
+        db = self._database()
+        try:
+            return SnapshotService(db, self.config).save_if_due(force=force)
         finally:
             db.close()
 
@@ -1047,6 +1086,7 @@ class DashboardService:
             or not db.has_table("signal_ai_analyses")
             or not db.has_table("graph_nodes")
             or not db.has_table("signal_quality_scores")
+            or not db.has_table("observability_snapshots")
         ):
             db.initialize()
         return db

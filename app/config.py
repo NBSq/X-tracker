@@ -89,6 +89,17 @@ class Config:
     quality_timeliness_good_minutes: int = 15
     quality_timeliness_weak_minutes: int = 60
     quality_change_significance: float = 5.0
+    log_format: str = "text"
+    log_level: str = "INFO"
+    log_include_timestamp: bool = True
+    slow_source_fetch_ms: int = 5000
+    slow_ai_request_ms: int = 15000
+    slow_database_query_ms: int = 500
+    slow_event_handler_ms: int = 2000
+    slow_telegram_send_ms: int = 3000
+    observability_snapshot_enabled: bool = True
+    observability_snapshot_interval_minutes: int = 15
+    observability_snapshot_retention_days: int = 30
 
 
 def _get_int_env(name: str, default: str) -> int:
@@ -283,6 +294,23 @@ def load_config() -> Config:
         quality_timeliness_good_minutes=_get_int_env("QUALITY_TIMELINESS_GOOD_MINUTES", "15"),
         quality_timeliness_weak_minutes=_get_int_env("QUALITY_TIMELINESS_WEAK_MINUTES", "60"),
         quality_change_significance=_get_float_env("QUALITY_CHANGE_SIGNIFICANCE", "5"),
+        log_format=os.getenv("LOG_FORMAT", "text").strip().lower(),
+        log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
+        log_include_timestamp=_get_bool_env("LOG_INCLUDE_TIMESTAMP", "true"),
+        slow_source_fetch_ms=_get_int_env("SLOW_SOURCE_FETCH_MS", "5000"),
+        slow_ai_request_ms=_get_int_env("SLOW_AI_REQUEST_MS", "15000"),
+        slow_database_query_ms=_get_int_env("SLOW_DATABASE_QUERY_MS", "500"),
+        slow_event_handler_ms=_get_int_env("SLOW_EVENT_HANDLER_MS", "2000"),
+        slow_telegram_send_ms=_get_int_env("SLOW_TELEGRAM_SEND_MS", "3000"),
+        observability_snapshot_enabled=_get_bool_env(
+            "OBSERVABILITY_SNAPSHOT_ENABLED", "true"
+        ),
+        observability_snapshot_interval_minutes=_get_int_env(
+            "OBSERVABILITY_SNAPSHOT_INTERVAL_MINUTES", "15"
+        ),
+        observability_snapshot_retention_days=_get_int_env(
+            "OBSERVABILITY_SNAPSHOT_RETENTION_DAYS", "30"
+        ),
     )
     if config.openai_timeout_seconds <= 0:
         raise RuntimeError("OPENAI_TIMEOUT_SECONDS must be positive")
@@ -367,4 +395,20 @@ def load_config() -> Config:
         raise RuntimeError("Quality timeliness thresholds must be positive and increasing")
     if config.quality_change_significance < 0:
         raise RuntimeError("QUALITY_CHANGE_SIGNIFICANCE cannot be negative")
+    if config.log_format not in {"text", "json"}:
+        raise RuntimeError("LOG_FORMAT must be text or json")
+    if config.log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+        raise RuntimeError("LOG_LEVEL is invalid")
+    slow_thresholds = (
+        config.slow_source_fetch_ms, config.slow_ai_request_ms,
+        config.slow_database_query_ms, config.slow_event_handler_ms,
+        config.slow_telegram_send_ms,
+    )
+    if any(value <= 0 for value in slow_thresholds):
+        raise RuntimeError("Slow-operation thresholds must be positive")
+    if (
+        config.observability_snapshot_interval_minutes <= 0
+        or config.observability_snapshot_retention_days <= 0
+    ):
+        raise RuntimeError("Observability snapshot interval and retention must be positive")
     return config

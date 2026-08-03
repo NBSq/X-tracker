@@ -29,6 +29,7 @@ from app.graph.models import (
     normalize_entity,
 )
 from app.graph.weights import GraphWeightCalculator, classify_relationship
+from app.observability.timing import timed
 
 
 logger = logging.getLogger("x_narrative_tracker")
@@ -46,6 +47,7 @@ class GraphService:
         self.event_bus = event_bus
         self.weights = GraphWeightCalculator(config.graph_recency_half_life_days)
 
+    @timed("graph_update")
     def rebuild(self) -> dict[str, int]:
         started = time.perf_counter()
         self.db.clear_graph_projection()
@@ -76,6 +78,7 @@ class GraphService:
         self._publish(GraphUpdated("rebuild", counts["nodes"], counts["edges"]))
         return counts
 
+    @timed("graph_update")
     def update_event(self, event_id: int, *, publish: bool = True) -> None:
         event = self.db.get_unified_event(event_id)
         if event is None:
@@ -149,6 +152,7 @@ class GraphService:
             self._refresh_node_weights()
             self._publish(GraphUpdated("unified_event", 1, 0))
 
+    @timed("graph_update")
     def update_signal(self, signal_id: int, *, publish: bool = True) -> None:
         signal = self.db.get_signal(signal_id)
         if signal is None:
@@ -183,6 +187,7 @@ class GraphService:
             self._refresh_node_weights()
             self._publish(GraphUpdated("signal", 0, 1 if token_node and narrative_node else 0))
 
+    @timed("graph_update")
     def update_watchlist(self, watchlist_id: int, *, publish: bool = True) -> None:
         watchlist = self.db.get_watchlist(watchlist_id)
         if watchlist is None:
@@ -210,6 +215,7 @@ class GraphService:
             self._refresh_node_weights()
             self._publish(GraphUpdated("watchlist", 1, 0))
 
+    @timed("graph_update")
     def update_ai_analysis(self, signal_id: int, *, publish: bool = True) -> None:
         signal = self.db.get_signal(signal_id)
         analysis = self.db.get_signal_ai_analysis(signal_id)
@@ -256,6 +262,7 @@ class GraphService:
             self._refresh_node_weights()
             self._publish(GraphUpdated("ai_analysis", 0, 1))
 
+    @timed("graph_update")
     def update_rule_match(self, rule_id: int, signal_id: int, *, publish: bool = True) -> None:
         rule = self.db.get_alert_rule(rule_id)
         signal = self.db.get_signal(signal_id)

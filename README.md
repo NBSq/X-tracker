@@ -1051,6 +1051,57 @@ The `.env.example` lists every quality setting. `QUALITY_WEIGHT_*` controls form
 
 Quality scores are internal analytical metrics, not predictions of token price or guaranteed investment performance. Small samples are unreliable, correlation does not imply causation, and outcome continuation does not measure trading profitability.
 
+## Production Observability
+
+The built-in observability layer is shared by the CLI, ingestion pipeline, Event Bus, Telegram integration, and FastAPI dashboard. It keeps runtime counters and latency histograms in memory, emits structured operational logs, and optionally stores coarse 15-minute snapshots for historical dashboard views.
+
+### Health and metrics
+
+Run the dashboard and query its operational endpoints:
+
+```powershell
+python -m app.main --dashboard
+curl.exe http://127.0.0.1:8000/live
+curl.exe http://127.0.0.1:8000/ready
+curl.exe http://127.0.0.1:8000/health
+curl.exe http://127.0.0.1:8000/metrics
+```
+
+`/live` is a cheap process check. `/ready` checks critical local dependencies: valid configuration, SQLite connectivity, and required schema. `/health` adds source, OpenAI, Telegram, Event Bus, and process details without calling external services. SQLite, configuration, Event Bus, and the process are critical; disabled optional integrations do not make the app unhealthy. A non-critical failure reports `degraded`, while a failed critical dependency reports `unhealthy`.
+
+Prometheus can scrape `http://HOST:8000/metrics` using its standard text exposition format. Counters include fetched and deduplicated content, unified events, signals, AI requests and fallbacks, rule and watchlist matches, graph and quality updates, Telegram delivery, Event Bus failures, database errors, and HTTP requests. Histograms cover pipeline and HTTP latency. Route labels use FastAPI route templates and never include article text, URLs, or entity IDs.
+
+```yaml
+scrape_configs:
+  - job_name: x-narrative-tracker
+    static_configs:
+      - targets: ["127.0.0.1:8000"]
+```
+
+The REST equivalents are `/api/system/health`, `/api/system/performance`, `/api/system/metrics-summary`, and `/api/system/version`. Dashboard views are available at **System Health**, **System Performance**, and **System Metrics** and poll every 30 seconds.
+
+### Logs and correlation IDs
+
+`LOG_FORMAT=text` remains the local default. Set `LOG_FORMAT=json` for one-JSON-object-per-line logs and use `LOG_LEVEL` and `LOG_INCLUDE_TIMESTAMP` to control verbosity and timestamps. Structured records include safe correlation, component, operation, duration, and error-classification fields. API keys, bot tokens, authorization values, article bodies, and raw prompts are intentionally excluded or redacted.
+
+Every CLI processing flow receives a correlation ID through Python context variables. HTTP clients may supply a safe `X-Correlation-ID`; invalid values are replaced, and the selected ID is returned in the response header. IDs are diagnostic only and are never trusted for authentication.
+
+Slow-operation warnings use these defaults: source fetch 5000 ms, OpenAI 15000 ms, database query 500 ms, Event Bus handler 2000 ms, and Telegram send 3000 ms. Configure them with the matching `SLOW_*_MS` environment variables. A slow operation is recorded and logged but is not retried solely for being slow.
+
+### CLI operations
+
+```powershell
+python -m app.main --version
+python -m app.main --health
+python -m app.main --component-health database
+python -m app.main --metrics-summary
+python -m app.main --performance-report
+```
+
+`--performance-report` preserves the existing signal-performance report and appends measured runtime pipeline latency, errors, and slow-operation counts. Metrics reset when the process restarts. With `OBSERVABILITY_SNAPSHOT_ENABLED=true`, coarse snapshots are stored in `observability_snapshots` at `OBSERVABILITY_SNAPSHOT_INTERVAL_MINUTES` and deleted after `OBSERVABILITY_SNAPSHOT_RETENTION_DAYS`. Existing databases receive this table and index automatically through idempotent initialization; individual request samples are not persisted.
+
+For production, scrape `/metrics`, alert separately on `/ready` failures and sustained degraded `/health` status, retain structured JSON logs in a centralized log system, and protect dashboard endpoints at the network or reverse-proxy layer. Health endpoints deliberately expose operational metadata and should not be placed on an unrestricted public interface.
+
 ## Testing
 
 Run the test suite:
@@ -1072,6 +1123,7 @@ Tests cover:
 - Watchlist normalization, matching, thresholds, events, reports, Telegram aggregation, dashboard/API CRUD, filters, and CSV exports
 - Multi-source normalization, exact/near deduplication, unified events, source health, event-bus publication, migration, dashboard/API, and CSV exports
 - Graph normalization, deterministic edges, weighting, decay, rebuilds, snapshots, metrics, rules, watchlists, outcomes, Event Bus updates, dashboard/API limits, and CSV exports
+- Structured logging, redaction, correlation IDs, timing, Prometheus metrics, component health, snapshots, CLI flags, and dashboard/API observability
 
 ## Contributing
 
@@ -1106,6 +1158,7 @@ pytest
 - Watchlists and items live in `watchlists` and `watchlist_items`; matches live in `signal_watchlists` with a uniqueness constraint per signal, watchlist, type, and value.
 - Historical query indexes for signal timestamps, narrative/token plus timestamp, and outcome evaluation timestamps are added with `CREATE INDEX IF NOT EXISTS`.
 - Relationship projections live in `graph_nodes`, `graph_edges`, and `graph_snapshots`; automatic `CREATE TABLE/INDEX IF NOT EXISTS` initialization migrates existing databases in place.
+- Coarse runtime history lives in `observability_snapshots`; runtime counters reset on restart and snapshot retention is cleaned automatically.
 - `--reset-db` clears analyses, alerts, narrative history, momentum snapshots, signal history, outcomes, rule matches, and watchlist signal associations. Rule and watchlist definitions are preserved.
 - Individual post-analysis, feed, OpenAI, and Telegram errors are logged without silently failing.
 

@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}System {{ view|capitalize }}{% endblock %}
+{% block heading %}System {{ view|capitalize }}{% endblock %}
+{% block content %}
+<div class="d-flex gap-2 mb-4" role="navigation" aria-label="System views">
+  <a class="btn btn-sm {% if view == 'health' %}btn-dark{% else %}btn-outline-secondary{% endif %}" href="/system/health">Health</a>
+  <a class="btn btn-sm {% if view == 'performance' %}btn-dark{% else %}btn-outline-secondary{% endif %}" href="/system/performance">Performance</a>
+  <a class="btn btn-sm {% if view == 'metrics' %}btn-dark{% else %}btn-outline-secondary{% endif %}" href="/system/metrics">Metrics</a>
+</div>
+
+{% if view == 'health' %}
+<div class="row g-3" id="system-observability" data-endpoint="/api/system/health">
+  {% for name, component in data.components.items() %}
+  <div class="col-md-6 col-xl-4">
+    <section class="panel h-100 p-3">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h2 class="h6 mb-0">{{ name|replace('_', ' ')|title }}</h2>
+        <span class="badge text-bg-{% if component.status == 'healthy' %}success{% elif component.status == 'disabled' %}secondary{% else %}warning{% endif %}">{{ component.status }}</span>
+      </div>
+      <p class="text-secondary small">{{ component.message }}</p>
+      <dl class="small mb-0">
+        {% for key, value in component.details.items() %}
+        <div class="d-flex justify-content-between gap-3 border-top py-1"><dt>{{ key|replace('_', ' ') }}</dt><dd class="mb-0 text-end">{{ value }}</dd></div>
+        {% endfor %}
+      </dl>
+    </section>
+  </div>
+  {% endfor %}
+</div>
+{% elif view == 'performance' %}
+<div class="row g-3" id="system-observability" data-endpoint="/api/system/performance">
+  {% for name, values in data.operations.items() %}
+  <div class="col-md-6 col-xl-3"><section class="panel h-100 p-3">
+    <h2 class="h6">{{ name|replace('_', ' ')|title }}</h2>
+    <div class="metric-value">{{ values.average_ms }} ms</div>
+    <p class="small text-secondary mb-0">{{ values.count }} operations · max {{ values.maximum_ms }} ms</p>
+  </section></div>
+  {% endfor %}
+</div>
+<section class="panel p-3 mt-3">
+  <h2 class="h6">Throughput</h2>
+  <div class="row g-3">
+    {% for name in ['content_items_fetched_total', 'signals_created_total', 'signals_evaluated_total', 'event_bus_events_published_total'] %}
+    <div class="col-sm-6 col-xl-3"><div class="small text-secondary">{{ name|replace('_total', '')|replace('_', ' ')|title }}</div><div class="metric-value">{{ data.throughput.get(name, 0)|int }}</div></div>
+    {% endfor %}
+  </div>
+</section>
+<section class="panel p-3 mt-3">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <h2 class="h6 mb-0">Runtime Trend</h2>
+    <span class="small text-secondary">Memory RSS from coarse snapshots</span>
+  </div>
+  <canvas id="runtime-trend" width="1000" height="220" class="w-100" aria-label="Runtime memory trend"></canvas>
+</section>
+{% else %}
+<section class="panel p-3" id="system-observability" data-endpoint="/api/system/metrics-summary">
+  <h2 class="h6">Process</h2>
+  <div class="table-responsive"><table class="table table-sm align-middle mb-0"><tbody>
+    {% for key, value in data.process.items() %}<tr><th>{{ key|replace('_', ' ')|title }}</th><td>{{ value }}</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endif %}
+<p class="small text-secondary mt-3">Data refreshes every 30 seconds.</p>
+{% endblock %}
+{% block scripts %}
+<script>
+const snapshots = {{ (data.recent_trends if view == 'performance' else [])|tojson }};
+const canvas = document.getElementById('runtime-trend');
+if (canvas && snapshots.length) {
+  const context = canvas.getContext('2d');
+  const values = snapshots.map(item => Number(item.metrics?.process?.memory_rss_bytes || 0));
+  const maximum = Math.max(...values, 1);
+  context.strokeStyle = '#0f766e'; context.lineWidth = 3; context.beginPath();
+  values.forEach((value, index) => {
+    const x = 12 + index * ((canvas.width - 24) / Math.max(values.length - 1, 1));
+    const y = canvas.height - 12 - value / maximum * (canvas.height - 32);
+    if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+  });
+  context.stroke();
+}
+setInterval(async () => {
+  const root = document.getElementById('system-observability');
+  if (!root) return;
+  try {
+    const response = await fetch(root.dataset.endpoint, {headers: {'Accept': 'application/json'}});
+    if (response.ok) document.getElementById('refresh-time').textContent = new Date().toLocaleTimeString();
+  } catch (_) {}
+}, 30000);
+</script>
+{% endblock %}

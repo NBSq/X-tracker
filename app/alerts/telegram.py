@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from html import escape
 from typing import TYPE_CHECKING, ClassVar
+import time
 
 import requests
 
@@ -11,11 +12,33 @@ from app.scoring.hype_score import HypeSignal
 from app.scoring.hype_score import normalize_hype_score
 from app.scoring.momentum_score import NarrativeMomentum
 from app.scoring.opportunity_score import NarrativeOpportunity
+from app.observability.errors import classify_error
+from app.observability.metrics import metrics
+from app.observability.timing import record_timing
 
 if TYPE_CHECKING:
     from app.ai.models import SignalAnalysisResult
     from app.rules.models import SignalFacts
     from app.watchlists.service import WatchlistService
+
+
+def _telegram_post(*args, **kwargs):
+    slow_threshold_ms = kwargs.pop("_slow_threshold_ms", 3000)
+    started = time.perf_counter()
+    try:
+        response = requests.post(*args, **kwargs)
+        response.raise_for_status()
+    except Exception as exc:
+        duration = (time.perf_counter() - started) * 1000
+        metrics.increment("telegram_notifications_failed_total")
+        metrics.record_error("telegram", classify_error(exc))
+        record_timing("telegram_send", duration, threshold_ms=slow_threshold_ms)
+        raise
+    duration = (time.perf_counter() - started) * 1000
+    metrics.increment("telegram_notifications_sent_total")
+    metrics.record_success("telegram")
+    record_timing("telegram_send", duration, threshold_ms=slow_threshold_ms)
+    return response
 
 
 @dataclass(frozen=True)
@@ -142,11 +165,18 @@ class SignalOutcomeReport:
 class TelegramAlerter:
     _command_offsets: ClassVar[dict[tuple[str, str], int]] = {}
 
-    def __init__(self, bot_token: str, chat_id: str) -> None:
+    def __init__(
+        self, bot_token: str, chat_id: str, slow_threshold_ms: int = 3000,
+    ) -> None:
         self.bot_token = bot_token
         self.chat_id = chat_id
         self._command_key = (bot_token, str(chat_id))
         self._update_offset = self._command_offsets.get(self._command_key)
+        self.slow_threshold_ms = slow_threshold_ms
+
+    def _post(self, *args, **kwargs):
+        kwargs["_slow_threshold_ms"] = self.slow_threshold_ms
+        return _telegram_post(*args, **kwargs)
 
     def send_hype_alert(
         self,
@@ -156,7 +186,7 @@ class TelegramAlerter:
         unified_event=None,
         unified_items=(),
     ) -> None:
-        response = requests.post(
+        response = self._post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
             json={
                 "chat_id": self.chat_id,
@@ -192,7 +222,7 @@ class TelegramAlerter:
             f"<b>Confidence:</b> {facts.confidence}/10\n"
             f"<b>Mentions:</b> {facts.mentions}"
         )
-        response = requests.post(
+        response = self._post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
             json={
                 "chat_id": self.chat_id,
@@ -235,7 +265,7 @@ class TelegramAlerter:
         )
 
     def _send_html(self, text: str) -> None:
-        response = requests.post(
+        response = self._post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
             json={"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"},
             timeout=30,
@@ -243,7 +273,7 @@ class TelegramAlerter:
         response.raise_for_status()
 
     def send_summary(self, summary: NarrativeSummary) -> None:
-        response = requests.post(
+        response = self._post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
             json={
                 "chat_id": self.chat_id,
@@ -255,7 +285,7 @@ class TelegramAlerter:
         response.raise_for_status()
 
     def send_trend_report(self, report: TrendReport) -> None:
-        response = requests.post(
+        response = self._post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
             json={
                 "chat_id": self.chat_id,
@@ -267,7 +297,7 @@ class TelegramAlerter:
         response.raise_for_status()
 
     def send_daily_digest(self, digest: DailyDigest) -> None:
-        response = requests.post(
+        response = self._post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
             json={
                 "chat_id": self.chat_id,
@@ -279,7 +309,7 @@ class TelegramAlerter:
         response.raise_for_status()
 
     def send_history_report(self, report: MomentumHistoryReport) -> None:
-        response = requests.post(
+        response = self._post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
             json={
                 "chat_id": self.chat_id,
@@ -291,7 +321,7 @@ class TelegramAlerter:
         response.raise_for_status()
 
     def send_opportunity_report(self, report: OpportunityReport) -> None:
-        response = requests.post(
+        response = self._post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
             json={
                 "chat_id": self.chat_id,
@@ -303,7 +333,7 @@ class TelegramAlerter:
         response.raise_for_status()
 
     def send_performance_report(self, report: SignalPerformanceReport) -> None:
-        response = requests.post(
+        response = self._post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
             json={
                 "chat_id": self.chat_id,
@@ -315,7 +345,7 @@ class TelegramAlerter:
         response.raise_for_status()
 
     def send_outcome_report(self, report: SignalOutcomeReport) -> None:
-        response = requests.post(
+        response = self._post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
             json={
                 "chat_id": self.chat_id,
@@ -383,7 +413,7 @@ class TelegramAlerter:
         return handled
 
     def _send_html(self, text: str) -> None:
-        response = requests.post(
+        response = self._post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
             json={"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"},
             timeout=30,

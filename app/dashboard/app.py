@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from contextlib import asynccontextmanager
+import logging
+import platform
+import time
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -21,6 +25,11 @@ from app.dashboard.service import DashboardService
 from app.rules import RuleValidationError
 from app.watchlists import WatchlistValidationError
 from app.ingestion.service import MultiSourceIngestionService
+from app import __version__
+from app.observability.context import correlation_scope
+from app.observability.errors import classify_error
+from app.observability.logging import log_event
+from app.observability.metrics import metrics
 
 
 DASHBOARD_DIR = Path(__file__).resolve().parent
@@ -148,10 +157,42 @@ def create_app(
         event_bus.subscribe(WatchlistMatched, event_state.handle)
         event_bus.subscribe(SignalQualityCalculated, event_state.handle)
 
+    http_logger = logging.getLogger("x_narrative_tracker.http")
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        http_logger.info(
+            "Startup diagnostics: version=%s python=%s database=%s sources=%d "
+            "ai_provider=%s telegram_configured=%s dashboard=true mode=dashboard",
+            __version__, platform.python_version(), path,
+            len(service.sources()), app_config.ai_provider,
+            bool(app_config.telegram_bot_token and app_config.telegram_chat_id),
+            extra={"event": "startup_diagnostics", "component": "process"},
+        )
+        log_event(
+            http_logger, logging.INFO, "dashboard_started", "Dashboard started",
+            component="process",
+        )
+        try:
+            yield
+        finally:
+            log_event(
+                http_logger, logging.INFO, "shutdown_starting",
+                "Dashboard shutdown starting", component="process",
+            )
+            try:
+                service.save_system_snapshot(force=True)
+            finally:
+                log_event(
+                    http_logger, logging.INFO, "dashboard_stopped", "Dashboard stopped",
+                    component="process",
+                )
+
     app = FastAPI(
         title="x-narrative-tracker Analytics",
-        version="1.0.0",
+        version=__version__,
         description="Read-only analytics dashboard for crypto narrative signals.",
+        lifespan=lifespan,
     )
     app.state.dashboard_service = service
     app.state.dashboard_events = event_state
@@ -161,6 +202,47 @@ def create_app(
         name="static",
     )
     templates = Jinja2Templates(directory=DASHBOARD_DIR / "templates")
+
+    @app.middleware("http")
+    async def observability_middleware(request: Request, call_next):
+        supplied_id = request.headers.get("X-Correlation-ID")
+        started = time.perf_counter()
+        with correlation_scope(supplied_id) as current_id:
+            try:
+                response = await call_next(request)
+                status_code = response.status_code
+            except Exception as exc:
+                status_code = 500
+                duration_ms = (time.perf_counter() - started) * 1000
+                route = getattr(request.scope.get("route"), "path", "unmatched")
+                metrics.http_requests.labels(request.method, route, str(status_code)).inc()
+                metrics.http_latency.labels(request.method, route).observe(duration_ms / 1000)
+                metrics.record_error("http", classify_error(exc))
+                log_event(
+                    http_logger, logging.ERROR, "http_request_failed", "HTTP request failed",
+                    method=request.method, route=route, status_code=status_code,
+                    duration_ms=round(duration_ms, 2), error_type=classify_error(exc),
+                )
+                raise
+            duration_ms = (time.perf_counter() - started) * 1000
+            route = getattr(request.scope.get("route"), "path", "unmatched")
+            metrics.http_requests.labels(request.method, route, str(status_code)).inc()
+            metrics.http_latency.labels(request.method, route).observe(duration_ms / 1000)
+            metrics.observe("http_request", duration_ms)
+            response.headers["X-Correlation-ID"] = current_id
+            log_event(
+                http_logger, logging.INFO, "http_request_completed", "HTTP request completed",
+                method=request.method, route=route, status_code=status_code,
+                duration_ms=round(duration_ms, 2),
+            )
+            try:
+                service.save_system_snapshot()
+            except Exception as exc:
+                log_event(
+                    http_logger, logging.WARNING, "snapshot_failed",
+                    "Observability snapshot failed", error_type=classify_error(exc),
+                )
+            return response
 
     def render(request: Request, template: str, page: str, **context):
         return templates.TemplateResponse(
@@ -263,6 +345,27 @@ def create_app(
             "performance",
             performance=service.performance(),
             status=service.status(),
+        )
+
+    @app.get("/system/health", response_class=HTMLResponse)
+    def system_health_page(request: Request):
+        return render(
+            request, "system_observability.html", "system_health",
+            view="health", data=service.system_health(), status=service.status(),
+        )
+
+    @app.get("/system/performance", response_class=HTMLResponse)
+    def system_performance_page(request: Request):
+        return render(
+            request, "system_observability.html", "system_performance",
+            view="performance", data=service.system_performance(), status=service.status(),
+        )
+
+    @app.get("/system/metrics", response_class=HTMLResponse)
+    def system_metrics_page(request: Request):
+        return render(
+            request, "system_observability.html", "system_metrics",
+            view="metrics", data=service.system_metrics_summary(), status=service.status(),
         )
 
     @app.get("/history", response_class=HTMLResponse)
@@ -1163,6 +1266,43 @@ def create_app(
     @app.get("/api/quality/validate")
     def quality_validate_api():
         return service.validate_quality()
+
+    @app.get("/live")
+    def liveness_api():
+        return {"status": "healthy", "version": __version__}
+
+    @app.get("/ready")
+    def readiness_api():
+        payload, status_code = service.system_ready()
+        return JSONResponse(payload, status_code=status_code)
+
+    @app.get("/health")
+    def health_api():
+        return service.system_health()
+
+    @app.get("/metrics")
+    def prometheus_metrics():
+        service.system_health()
+        return PlainTextResponse(
+            metrics.prometheus().decode("utf-8"),
+            media_type="text/plain; version=0.0.4",
+        )
+
+    @app.get("/api/system/health")
+    def system_health_api():
+        return service.system_health()
+
+    @app.get("/api/system/performance")
+    def system_performance_api():
+        return service.system_performance()
+
+    @app.get("/api/system/metrics-summary")
+    def system_metrics_summary_api():
+        return service.system_metrics_summary()
+
+    @app.get("/api/system/version")
+    def system_version_api():
+        return {"version": __version__}
 
     return app
 

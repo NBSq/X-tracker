@@ -22,6 +22,9 @@ from app.ingestion.deduplication import DeduplicationService
 from app.ingestion.models import IngestionResult, SourceDefinition
 from app.ingestion.sources import create_content_source, load_source_definitions
 from app.ingestion.unified_events import UnifiedEventService
+from app.observability.errors import classify_error
+from app.observability.metrics import metrics, record_domain_event
+from app.observability.timing import record_timing
 
 
 logger = logging.getLogger("x_narrative_tracker")
@@ -122,6 +125,12 @@ class MultiSourceIngestionService:
                 if post is not None:
                     posts.append(post)
             duration = int((time.perf_counter() - started) * 1000)
+            record_timing(
+                "source_fetch", duration,
+                threshold_ms=self.config.slow_source_fetch_ms,
+                fields={"source_id": definition.source_key},
+            )
+            metrics.record_success("source_fetch")
             recovered = self.db.record_source_fetch(
                 int(row["id"]), success=True, item_count=len(items),
                 accepted_count=accepted, duplicate_count=duplicates,
@@ -139,6 +148,12 @@ class MultiSourceIngestionService:
             return IngestionResult(len(items), accepted, duplicates, new_events, tuple(posts))
         except Exception as exc:
             duration = int((time.perf_counter() - started) * 1000)
+            record_timing(
+                "source_fetch", duration,
+                threshold_ms=self.config.slow_source_fetch_ms,
+                fields={"source_id": definition.source_key},
+            )
+            metrics.record_error("source_fetch", classify_error(exc))
             error_type = _error_type(exc)
             self.db.record_source_fetch(
                 int(row["id"]), success=False, item_count=0, accepted_count=0,
@@ -157,7 +172,12 @@ class MultiSourceIngestionService:
             return IngestionResult(0, 0, 0, 0, ())
 
     def ingest_item(self, source_id: int, item):
+        deduplication_started = time.perf_counter()
         match = self.deduplication.match(source_id, item)
+        metrics.observe(
+            "deduplication",
+            (time.perf_counter() - deduplication_started) * 1000,
+        )
         if match.matched:
             if match.reason == "same_external_id" and match.content_item_id is not None:
                 event_id = match.unified_event_id
@@ -239,6 +259,8 @@ class MultiSourceIngestionService:
     def _publish(self, event: object) -> None:
         if self.event_bus is not None:
             self.event_bus.publish(event)
+        else:
+            record_domain_event(event)
 
 
 def format_deduplication_report(db: Database, days: int = 30) -> str:

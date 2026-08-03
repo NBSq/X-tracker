@@ -27,6 +27,7 @@ from app.quality.models import (
     QualityRecommendation,
     SignalQualityScore,
 )
+from app.observability.timing import timed
 
 
 logger = logging.getLogger("x_narrative_tracker")
@@ -45,6 +46,7 @@ class SignalQualityService:
         self.event_bus = event_bus
         self.calculator = QualityScoreCalculator(config)
 
+    @timed("quality_calculation")
     def calculate_signal(
         self, signal_id: int, *, version: int | None = None, publish: bool = True,
     ) -> SignalQualityScore:
