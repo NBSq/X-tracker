@@ -13,8 +13,11 @@ from app.sources.x_client import XPost
 class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.connection = sqlite3.connect(path)
+        self.connection = sqlite3.connect(path, timeout=30)
         self.connection.row_factory = sqlite3.Row
+        self.connection.execute("PRAGMA busy_timeout = 30000")
+        self.connection.execute("PRAGMA journal_mode = WAL")
+        self.connection.execute("PRAGMA foreign_keys = ON")
 
     def initialize(self) -> None:
         self.connection.executescript(

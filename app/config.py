@@ -100,6 +100,10 @@ class Config:
     observability_snapshot_enabled: bool = True
     observability_snapshot_interval_minutes: int = 15
     observability_snapshot_retention_days: int = 30
+    dashboard_host: str = "127.0.0.1"
+    dashboard_port: int = 8000
+    tracker_enabled: bool = True
+    tracker_shutdown_timeout_seconds: int = 30
 
 
 def _get_int_env(name: str, default: str) -> int:
@@ -136,6 +140,11 @@ def _get_int_tuple_env(name: str, default: str) -> tuple[int, ...]:
     return values
 
 
+def _get_path_env(name: str, default: str) -> Path:
+    path = Path(os.getenv(name, default))
+    return path if path.is_absolute() else BASE_DIR / path
+
+
 def load_config() -> Config:
     load_dotenv()
 
@@ -156,7 +165,7 @@ def load_config() -> Config:
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID"),
-        database_path=BASE_DIR / os.getenv("DATABASE_PATH", "x_narrative_tracker.sqlite3"),
+        database_path=_get_path_env("DATABASE_PATH", "x_narrative_tracker.sqlite3"),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         fetch_interval_seconds=_get_int_env("FETCH_INTERVAL_SECONDS", "900"),
         hype_alert_threshold=_get_float_env("HYPE_ALERT_THRESHOLD", "25"),
@@ -169,10 +178,10 @@ def load_config() -> Config:
         ),
         outcome_success_threshold=_get_float_env("OUTCOME_SUCCESS_THRESHOLD", "10"),
         outcome_failure_threshold=_get_float_env("OUTCOME_FAILURE_THRESHOLD", "-10"),
-        accounts_path=BASE_DIR / "data" / "accounts.json",
-        narratives_path=BASE_DIR / "data" / "narratives.json",
-        sample_posts_path=BASE_DIR / "data" / "sample_posts.json",
-        rss_feeds_path=BASE_DIR / "data" / "rss_feeds.json",
+        accounts_path=_get_path_env("ACCOUNTS_PATH", "data/accounts.json"),
+        narratives_path=_get_path_env("NARRATIVES_PATH", "data/narratives.json"),
+        sample_posts_path=_get_path_env("SAMPLE_POSTS_PATH", "data/sample_posts.json"),
+        rss_feeds_path=_get_path_env("RSS_FEEDS_PATH", "data/rss_feeds.json"),
         history_growth_threshold=_get_float_env(
             "HISTORY_GROWTH_THRESHOLD",
             "20",
@@ -311,6 +320,12 @@ def load_config() -> Config:
         observability_snapshot_retention_days=_get_int_env(
             "OBSERVABILITY_SNAPSHOT_RETENTION_DAYS", "30"
         ),
+        dashboard_host=os.getenv("DASHBOARD_HOST", "127.0.0.1").strip(),
+        dashboard_port=_get_int_env("DASHBOARD_PORT", "8000"),
+        tracker_enabled=_get_bool_env("TRACKER_ENABLED", "true"),
+        tracker_shutdown_timeout_seconds=_get_int_env(
+            "TRACKER_SHUTDOWN_TIMEOUT_SECONDS", "30"
+        ),
     )
     if config.openai_timeout_seconds <= 0:
         raise RuntimeError("OPENAI_TIMEOUT_SECONDS must be positive")
@@ -411,4 +426,10 @@ def load_config() -> Config:
         or config.observability_snapshot_retention_days <= 0
     ):
         raise RuntimeError("Observability snapshot interval and retention must be positive")
+    if not config.dashboard_host:
+        raise RuntimeError("DASHBOARD_HOST cannot be empty")
+    if not 1 <= config.dashboard_port <= 65535:
+        raise RuntimeError("DASHBOARD_PORT must be between 1 and 65535")
+    if config.tracker_shutdown_timeout_seconds <= 0:
+        raise RuntimeError("TRACKER_SHUTDOWN_TIMEOUT_SECONDS must be positive")
     return config

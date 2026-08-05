@@ -357,6 +357,28 @@ GRAPH_MAX_NODES=250
 
 When Telegram credentials are missing, the application continues normally and logs reports to the console.
 
+## Docker Quick Start
+
+Docker runs the dashboard and RSS tracker together in one non-root container while persisting SQLite and generated exports in named volumes.
+
+```powershell
+Copy-Item .env.production.example .env
+# Edit .env; mock AI works without external credentials.
+docker compose --env-file .env config
+docker compose --env-file .env up -d --build
+docker compose ps
+```
+
+Open [http://localhost:8000](http://localhost:8000), then verify:
+
+```powershell
+curl.exe http://127.0.0.1:8000/live
+curl.exe http://127.0.0.1:8000/ready
+docker compose logs -f app
+```
+
+The Docker deployment is optional; all local Python commands remain unchanged. See [docs/deployment.md](docs/deployment.md) for production configuration, storage, backup, restore, updates, rollback, monitoring, resource guidance, and troubleshooting.
+
 ## OpenAI Signal Reasoning
 
 Signal reasoning is a second-stage analysis of a saved hype signal. It uses the signal's token and narrative, normalized hype and momentum, mention count, tracker confidence, up to three deduplicated source excerpts, watchlist matches, rule matches, related entities, and recent outcome history. The result is stored separately from the original post classification:
