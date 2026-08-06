@@ -21,3 +21,7 @@ What other approaches did you consider?
 ## Additional Context
 
 Add examples, screenshots, links, or related issues.
+
+## Compatibility
+
+Would this change an existing CLI flag, REST endpoint, Event Bus model, database record, or configuration variable?

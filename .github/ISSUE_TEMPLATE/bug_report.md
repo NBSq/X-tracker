@@ -28,9 +28,11 @@ What happened instead?
 
 - OS:
 - Python version:
+- x-narrative-tracker version (`python -m app.main --version`):
 - Command:
 - Mode: local / rss / live
 - Mock AI: yes / no
+- Install: source / Docker
 
 ## Logs or Output
 

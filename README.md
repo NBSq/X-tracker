@@ -1,10 +1,28 @@
 # x-narrative-tracker
 
-Local-first crypto narrative intelligence from X posts and RSS news.
+[![Release](https://img.shields.io/badge/release-v1.0.0-0f766e)](CHANGELOG.md)
+[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-3776AB)](.github/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ED)](docs/deployment.md)
 
-`x-narrative-tracker` collects recent crypto content, extracts tokens and narratives, measures hype and momentum, stores historical signals in SQLite, and delivers actionable Telegram alerts and reports.
+Local-first crypto narrative intelligence for researchers, analysts, and builders who need to turn fragmented X and crypto-news coverage into explainable signals.
 
-The project supports real APIs, public RSS feeds, and a fully local mock-AI workflow for development and evaluation.
+`x-narrative-tracker` ingests recent content, extracts tokens and narratives, measures hype and momentum, groups duplicate reporting, stores history in SQLite, and exposes alerts, reports, CSV exports, and a built-in dashboard. The complete sample workflow runs offline with deterministic mock AI; X, OpenAI, Telegram, and public RSS are optional integrations.
+
+![Analytics dashboard overview](docs/screenshots/dashboard-overview.png)
+
+## Quick Start
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env
+python -m app.main --mode local --mock-ai --reset-db --summary --no-telegram
+python -m app.main --dashboard
+```
+
+Open `http://127.0.0.1:8000/`. See the [offline demo](docs/demo.md), [configuration reference](docs/configuration.md), and [Docker deployment guide](docs/deployment.md) for complete flows.
 
 ## Highlights
 
@@ -23,11 +41,29 @@ The project supports real APIs, public RSS feeds, and a fully local mock-AI work
 - Score signal evidence, calibration, reliability, timeliness, noise, and evaluation coverage
 - Run a complete local MVP without X or OpenAI credentials
 
+## Project Status
+
+Version `1.0.0` is the first stable release. The documented CLI/API, additive SQLite initialization, offline workflow, dashboard, exports, outcomes, smart alerts, watchlists, relationship graph, quality analytics, observability, and Docker deployment form the supported v1 surface.
+
+X, OpenAI, Telegram, and live RSS are optional network integrations. Momentum, relationship, quality, and outcome models are heuristic decision-support tools; they do not predict prices or profitability. The dashboard has no built-in authentication, and SQLite plus the in-process Event Bus target a single active writer. Read the [v1.0.0 release notes](docs/releases/v1.0.0.md) before production deployment.
+
+## Documentation
+
+| Guide | Contents |
+| --- | --- |
+| [Architecture](docs/architecture.md) | Modules, event flow, persistence, and boundaries |
+| [CLI reference](docs/cli.md) | Commands, examples, and side effects |
+| [REST API](docs/api.md) | Shipped pages and endpoints |
+| [Configuration](docs/configuration.md) | Environment variables, defaults, and requirements |
+| [Offline demo](docs/demo.md) | Reproducible credential-free walkthrough |
+| [Deployment](docs/deployment.md) | Docker, Compose, backup, health, and operations |
+| [Troubleshooting](docs/troubleshooting.md) | Common setup and runtime failures |
+| [Screenshots](docs/screenshots.md) | Current UI captures and reproduction steps |
+| [Release checklist](docs/release-checklist.md) | Maintainer release procedure |
+
 ## Screenshots
 
 ### Analytics Dashboard
-
-![Analytics dashboard overview](docs/screenshots/dashboard-overview.png)
 
 The dashboard presents system health, latest signals, evaluated accuracy, momentum, top narratives, and top tokens from the existing SQLite database.
 
