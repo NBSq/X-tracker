@@ -124,4 +124,18 @@ Bands default to `85`, `70`, `55`, and `40` through `QUALITY_EXCELLENT_THRESHOLD
 | `TRACKER_ENABLED` | Run background tracker in production entrypoint | `true` |
 | `TRACKER_SHUTDOWN_TIMEOUT_SECONDS` | Graceful tracker shutdown timeout | `30` |
 
+## Saved Search Reports
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `REPORT_SCHEDULER_ENABLED` | Start the lightweight report poller with FastAPI | `true` |
+| `REPORT_SCHEDULER_POLL_SECONDS` | Due-report check interval | `60` |
+| `REPORT_DEFAULT_TIMEZONE` | IANA timezone for new reports | `UTC` |
+| `REPORT_MAX_RESULTS` | Maximum saved-search/report rows, 1-500 | `50` |
+| `REPORT_CSV_RETENTION_DAYS` | Scheduled CSV retention | `30` |
+| `REPORT_AI_SUMMARY_ENABLED` | Permit opt-in OpenAI report summaries | `false` |
+| `REPORT_OUTPUT_DIR` | Scheduler-owned CSV directory | `exports/scheduled_reports` |
+
+Named IANA timezones use the `tzdata` dependency on platforms without a system timezone database. `REPORT_OUTPUT_DIR` should be inside a persistent export volume in containers.
+
 All booleans accept conventional true/false values. Invalid numeric ranges and unsupported providers fail at startup with the variable name in the error.

@@ -71,6 +71,8 @@ from app.watchlists import (
     WatchlistValidationError,
     format_watchlist_report,
 )
+from app.search import SearchService
+from app.reports import ReportScheduler
 from app.sources.local_client import load_sample_posts
 from app.sources.rss_client import RSSClient, load_rss_feeds
 from app.sources.x_client import XClient, XPost
@@ -464,7 +466,99 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--watchlist-include-digest", action="store_true")
     parser.add_argument("--watchlist-no-highlight", action="store_true")
     parser.add_argument("--watchlist-case-sensitive", action="store_true")
+    parser.add_argument("--list-saved-searches", action="store_true")
+    parser.add_argument(
+        "--run-saved-search", type=positive_int, metavar="SEARCH_ID",
+        help="Execute a saved search and record its run metadata",
+    )
+    parser.add_argument(
+        "--saved-search-details", type=positive_int, metavar="SEARCH_ID",
+        help="Show a saved search definition and result preview",
+    )
+    parser.add_argument(
+        "--delete-saved-search", type=positive_int, metavar="SEARCH_ID",
+        help="Delete a saved search and its linked scheduled reports",
+    )
+    parser.add_argument("--list-scheduled-reports", action="store_true")
+    parser.add_argument(
+        "--run-scheduled-report", type=positive_int, metavar="REPORT_ID",
+        help="Run a scheduled report immediately",
+    )
+    parser.add_argument(
+        "--scheduled-report-details", type=positive_int, metavar="REPORT_ID",
+        help="Show a scheduled report and recent run history",
+    )
     return parser.parse_args()
+
+
+def requested_saved_search_command(args: argparse.Namespace) -> bool:
+    return bool(
+        args.list_saved_searches or args.run_saved_search
+        or args.saved_search_details or args.delete_saved_search
+    )
+
+
+def run_saved_search_command(
+    args: argparse.Namespace, config: Config, db: Database,
+) -> None:
+    service = SearchService(db, config)
+    if args.list_saved_searches:
+        logger.info(
+            "Saved searches\n%s",
+            json.dumps([item.as_dict() for item in service.list()], indent=2),
+        )
+    elif args.run_saved_search:
+        logger.info(
+            "Saved search results\n%s",
+            json.dumps(service.run(args.run_saved_search).as_dict(), indent=2, default=str),
+        )
+    elif args.saved_search_details:
+        search = service.get(args.saved_search_details)
+        if search is None:
+            raise ValueError(f"Saved search not found: {args.saved_search_details}")
+        payload = {
+            "saved_search": search.as_dict(),
+            "preview": service.preview(search.id).as_dict(),
+        }
+        logger.info("Saved search details\n%s", json.dumps(payload, indent=2, default=str))
+    elif args.delete_saved_search:
+        service.delete(args.delete_saved_search)
+        logger.info("Saved search deleted: %d", args.delete_saved_search)
+
+
+def requested_scheduled_report_command(args: argparse.Namespace) -> bool:
+    return bool(
+        args.list_scheduled_reports or args.run_scheduled_report
+        or args.scheduled_report_details
+    )
+
+
+def run_scheduled_report_command(
+    args: argparse.Namespace, config: Config, db: Database,
+) -> None:
+    service = ReportScheduler(db, config)
+    if args.list_scheduled_reports:
+        logger.info(
+            "Scheduled reports\n%s",
+            json.dumps([item.as_dict() for item in service.list()], indent=2),
+        )
+    elif args.run_scheduled_report:
+        result = service.run(args.run_scheduled_report, force=True)
+        if result is None:
+            raise ValueError("Scheduled report is already running")
+        logger.info("Scheduled report run\n%s", json.dumps(result, indent=2))
+    elif args.scheduled_report_details:
+        report = service.get(args.scheduled_report_details)
+        if report is None:
+            raise ValueError(f"Scheduled report not found: {args.scheduled_report_details}")
+        logger.info(
+            "Scheduled report details\n%s",
+            json.dumps({
+                "scheduled_report": report.as_dict(),
+                "runs": service.runs(report.id),
+                "preview": service.preview(report.id),
+            }, indent=2, default=str),
+        )
 
 
 def requested_watchlist_command(args: argparse.Namespace) -> bool:
@@ -1942,6 +2036,12 @@ def main() -> None:
             return
         if requested_rule_command(args):
             run_rule_command(args, db)
+            return
+        if requested_saved_search_command(args):
+            run_saved_search_command(args, config, db)
+            return
+        if requested_scheduled_report_command(args):
+            run_scheduled_report_command(args, config, db)
             return
         if requested_ingestion_command(args):
             run_ingestion_command(args, config, db)

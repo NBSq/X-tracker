@@ -95,6 +95,20 @@ Read reports with `--quality-summary`, `--quality-signal ID`, `--quality-sources
 
 Use `--reset-db` only with an intentional backup. Graph rebuild, quality recalculation, deduplication rebuild, and outcome evaluation update derived data but preserve source content and saved signals.
 
+## Saved Searches And Scheduled Reports
+
+| Command | Purpose | Side effects |
+| --- | --- | --- |
+| `--list-saved-searches` | List definitions and execution metadata | Read only |
+| `--saved-search-details ID` | Show definition and preview | Executes a non-recording preview |
+| `--run-saved-search ID` | Execute an enabled search | Updates `last_run_at` and `run_count`; publishes an event |
+| `--delete-saved-search ID` | Delete a search | Also removes linked reports through SQLite cascade |
+| `--list-scheduled-reports` | List schedule, delivery, and health metadata | Read only |
+| `--scheduled-report-details ID` | Show definition, preview, and run history | Executes a non-delivering preview |
+| `--run-scheduled-report ID` | Claim and run a report immediately | May send one Telegram message and generate one CSV |
+
+Saved-search and report creation remain dashboard/API-first so CLI users do not need to maintain complex JSON expressions.
+
 ## CSV Export
 
 Core exports are `--export-signals-csv`, `--export-outcomes-csv`, `--export-performance-csv`, `--export-history-csv`, `--export-watchlists-csv`, and `--export-csv all`. Source, event, graph, and quality sections have corresponding `--export-*-csv` flags. Combine exports with `--output-dir PATH`, `--from-date YYYY-MM-DD`, and `--to-date YYYY-MM-DD`. Files use UTF-8 with BOM and unique timestamps; export commands create the output directory and never mutate analytics records.

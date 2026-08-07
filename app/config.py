@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 
@@ -104,6 +105,13 @@ class Config:
     dashboard_port: int = 8000
     tracker_enabled: bool = True
     tracker_shutdown_timeout_seconds: int = 30
+    report_scheduler_enabled: bool = True
+    report_scheduler_poll_seconds: int = 60
+    report_default_timezone: str = "UTC"
+    report_max_results: int = 50
+    report_csv_retention_days: int = 30
+    report_ai_summary_enabled: bool = False
+    report_output_dir: Path = BASE_DIR / "exports" / "scheduled_reports"
 
 
 def _get_int_env(name: str, default: str) -> int:
@@ -326,6 +334,19 @@ def load_config() -> Config:
         tracker_shutdown_timeout_seconds=_get_int_env(
             "TRACKER_SHUTDOWN_TIMEOUT_SECONDS", "30"
         ),
+        report_scheduler_enabled=_get_bool_env("REPORT_SCHEDULER_ENABLED", "true"),
+        report_scheduler_poll_seconds=_get_int_env(
+            "REPORT_SCHEDULER_POLL_SECONDS", "60"
+        ),
+        report_default_timezone=os.getenv("REPORT_DEFAULT_TIMEZONE", "UTC").strip(),
+        report_max_results=_get_int_env("REPORT_MAX_RESULTS", "50"),
+        report_csv_retention_days=_get_int_env("REPORT_CSV_RETENTION_DAYS", "30"),
+        report_ai_summary_enabled=_get_bool_env(
+            "REPORT_AI_SUMMARY_ENABLED", "false"
+        ),
+        report_output_dir=_get_path_env(
+            "REPORT_OUTPUT_DIR", "exports/scheduled_reports"
+        ),
     )
     if config.openai_timeout_seconds <= 0:
         raise RuntimeError("OPENAI_TIMEOUT_SECONDS must be positive")
@@ -339,6 +360,17 @@ def load_config() -> Config:
         raise RuntimeError("OPENAI_DAILY_REQUEST_LIMIT cannot be negative")
     if config.openai_cache_ttl_hours <= 0:
         raise RuntimeError("OPENAI_CACHE_TTL_HOURS must be positive")
+    if config.report_scheduler_poll_seconds <= 0:
+        raise RuntimeError("REPORT_SCHEDULER_POLL_SECONDS must be positive")
+    if not 1 <= config.report_max_results <= 500:
+        raise RuntimeError("REPORT_MAX_RESULTS must be between 1 and 500")
+    if config.report_csv_retention_days <= 0:
+        raise RuntimeError("REPORT_CSV_RETENTION_DAYS must be positive")
+    if config.report_default_timezone.upper() != "UTC":
+        try:
+            ZoneInfo(config.report_default_timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise RuntimeError("REPORT_DEFAULT_TIMEZONE must be a valid IANA timezone") from exc
     if not 0 <= config.openai_min_hype_score <= 100:
         raise RuntimeError("OPENAI_MIN_HYPE_SCORE must be between 0 and 100")
     if not 0 <= config.openai_min_momentum_score <= 100:

@@ -21,6 +21,10 @@ flowchart LR
     DB --> Graph["Relationship graph projection"]
     DB --> Quality["Signal quality analytics"]
     DB --> Reports["CLI reports and CSV export"]
+    DB --> Saved["Saved searches"]
+    Saved --> Scheduler["Scheduled reports"]
+    Scheduler --> Telegram
+    Scheduler --> Reports
     DB --> API["FastAPI + Jinja2 dashboard"]
 ```
 
@@ -39,6 +43,7 @@ flowchart LR
 | Delivery | `app/alerts/`, `app/export/` | Telegram, console output, and deterministic CSV export |
 | Web | `app/dashboard/` | Read-oriented dashboard and REST API over the existing database |
 | Operations | `app/observability/`, `app/production.py` | Structured logs, health, metrics, snapshots, and production lifecycle |
+| Search/report automation | `app/search/`, `app/reports/` | Allowlisted searches, atomic scheduling, delivery, and run history |
 
 ## Event Flow
 
@@ -50,8 +55,11 @@ The Event Bus is synchronous, typed, dependency-free, and in-process. `publish(e
 4. Default subscribers persist the signal, update performance, evaluate rules and watchlists, project graph and quality data, and optionally notify Telegram.
 5. Mature signals are evaluated independently; a persisted outcome publishes `SignalEvaluated`.
 6. The dashboard and reports read persisted records. They do not own ingestion or scoring.
+7. Saved searches reuse repository and graph query paths. The scheduler atomically claims due reports, then publishes lifecycle events without coupling search execution to Telegram.
 
 Source and graph events include `ContentFetched`, `ContentAccepted`, `ContentDeduplicated`, `UnifiedEventCreated`, `UnifiedEventUpdated`, `GraphUpdated`, and quality lifecycle events. AI reasoning publishes request, completion, failure, and fallback events without coupling the analyzer to Telegram or FastAPI.
+
+Report automation adds `SavedSearchExecuted`, `ScheduledReportStarted`, `ScheduledReportCompleted`, `ScheduledReportFailed`, and `ScheduledReportDelivered`. The FastAPI lifespan hosts one lightweight polling thread; SQLite claim state prevents duplicate execution in the supported single-instance deployment.
 
 ## Persistence And Migrations
 
@@ -62,7 +70,7 @@ Source and graph events include `ContentFetched`, `ContentAccepted`, `ContentDed
 - **Stable:** local sample mode, mock AI, SQLite storage, reports, CSV export, dashboard/API, health endpoints, outcomes, graph, quality, rules, and watchlists.
 - **Optional integrations:** X, OpenAI, Telegram, and live RSS require network access and their relevant configuration.
 - **Experimental analytics:** heuristic momentum, relationship inference, signal quality, and outcome classification are decision-support signals, not financial predictions.
-- **Deployment:** the Docker image runs one FastAPI process and an optional background tracker in the same container. For horizontal scaling, run only one ingestion writer or provide external coordination.
+- **Deployment:** the Docker image runs one FastAPI process, an optional background tracker, and an optional report scheduler in the same container. Run one ingestion writer and one scheduler per SQLite volume.
 
 ## Extension Points
 

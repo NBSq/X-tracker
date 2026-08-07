@@ -47,6 +47,22 @@ Version `1.0.0` is the first stable release. The documented CLI/API, additive SQ
 
 X, OpenAI, Telegram, and live RSS are optional network integrations. Momentum, relationship, quality, and outcome models are heuristic decision-support tools; they do not predict prices or profitability. The dashboard has no built-in authentication, and SQLite plus the in-process Event Bus target a single active writer. Read the [v1.0.0 release notes](docs/releases/v1.0.0.md) before production deployment.
 
+## Saved Searches
+
+Saved searches capture validated, reusable analytics filters for signals, unified events, narratives, tokens, graph relationships, or quality-scored signals. Filters are allowlisted and parameterized; arbitrary SQL and field expressions are rejected. Searches can combine persisted watchlist/rule matches, source evidence, AI metadata, outcomes, quality, score ranges, graph state, and dates.
+
+## Scheduled Reports
+
+Daily, weekly, or bounded interval reports run saved searches through a lightweight SQLite-backed scheduler. Each run produces one concise local summary, optionally sends one escaped Telegram message, optionally writes an Excel-compatible CSV, and persists status and run history. AI summaries are opt-in and fall back to deterministic local metrics.
+
+Example workflow:
+
+1. Open `/saved-searches/new` and save `quality_min: 80`, `narrative: AI agents`, and `source_count_min: 3` as a quality-signal search.
+2. Open `/scheduled-reports/new`, select the search, choose a daily local time and timezone, and enable Telegram or CSV delivery.
+3. Preview the report without sending it, then inspect run history from the report details page.
+
+See [Saved Searches](docs/saved-searches.md) and [Scheduled Reports](docs/scheduled-reports.md).
+
 ## Documentation
 
 | Guide | Contents |
@@ -60,6 +76,8 @@ X, OpenAI, Telegram, and live RSS are optional network integrations. Momentum, r
 | [Troubleshooting](docs/troubleshooting.md) | Common setup and runtime failures |
 | [Screenshots](docs/screenshots.md) | Current UI captures and reproduction steps |
 | [Release checklist](docs/release-checklist.md) | Maintainer release procedure |
+| [Saved searches](docs/saved-searches.md) | Targets, filters, sorting, API, and CLI |
+| [Scheduled reports](docs/scheduled-reports.md) | Scheduling, delivery, retention, and operations |
 
 ## Screenshots
 
@@ -170,6 +188,9 @@ The application uses a synchronous, typed, in-process event bus with no external
 | `QualityAggregateUpdated` | An entity-period quality aggregate is saved | Reporting and future automation adapters |
 | `QualityDegradationDetected` / `QualityImprovementDetected` | Equivalent periods differ beyond the configured significance | Operational observability |
 | `QualityRecommendationCreated` | A deterministic quality issue is first persisted for a period | Recommendation workflow adapters |
+| `SavedSearchExecuted` | An enabled saved search records a real run | Metrics and future workflow adapters |
+| `ScheduledReportStarted` / `ScheduledReportCompleted` / `ScheduledReportFailed` | A persisted report run changes lifecycle state | Observability and future delivery adapters |
+| `ScheduledReportDelivered` | One report delivery succeeds | Delivery observability |
 
 The bus is intentionally transport-neutral. Future Dashboard, REST API, websocket, or audit-log adapters can subscribe without changing scoring and analysis code. Existing public helpers remain callable without supplying a bus; they create and register the default subscribers automatically.
 

@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block title %}Scheduled Reports{% endblock %}{% block heading %}Scheduled Reports{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-end mb-3"><a class="btn btn-dark btn-sm" href="/scheduled-reports/new">Create report</a></div>
+<div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Name</th><th>Search</th><th>Schedule</th><th>Delivery</th><th>Next run</th><th>Status</th><th>Success</th></tr></thead><tbody>{% for item in reports %}<tr><td><a href="/scheduled-reports/{{ item.id }}"><strong>{{ item.name }}</strong></a></td><td>{{ item.saved_search_name }}</td><td>{{ item.schedule_type }} {{ item.schedule_value }}<div class="small text-muted">{{ item.timezone }}</div></td><td>{{ item.delivery_type }}</td><td>{{ item.next_run_at }}</td><td>{{ item.last_status or ('Enabled' if item.enabled else 'Disabled') }}</td><td>{{ '%.1f'|format(item.success_rate) }}%</td></tr>{% else %}<tr><td colspan="7" class="empty-state">No scheduled reports.</td></tr>{% endfor %}</tbody></table></div>
+{% endblock %}

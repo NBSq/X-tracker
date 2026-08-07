@@ -30,6 +30,9 @@ from app.observability.context import correlation_scope
 from app.observability.errors import classify_error
 from app.observability.logging import log_event
 from app.observability.metrics import metrics
+from app.search import SearchValidationError
+from app.reports import ScheduledReportValidationError
+from app.reports.scheduler import SchedulerLoop
 
 
 DASHBOARD_DIR = Path(__file__).resolve().parent
@@ -124,6 +127,58 @@ class QualityRecalculatePayload(BaseModel):
     calculation_version: int | None = Field(default=None, ge=1)
 
 
+class SavedSearchCreatePayload(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=1000)
+    enabled: bool = True
+    target_type: str
+    filters: dict = Field(default_factory=dict)
+    sort_by: str | None = None
+    sort_direction: str = "desc"
+    result_limit: int = Field(default=50, ge=1, le=500)
+
+
+class SavedSearchUpdatePayload(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=1000)
+    enabled: bool | None = None
+    target_type: str | None = None
+    filters: dict | None = None
+    sort_by: str | None = None
+    sort_direction: str | None = None
+    result_limit: int | None = Field(default=None, ge=1, le=500)
+
+
+class ScheduledReportCreatePayload(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    saved_search_id: int = Field(ge=1)
+    enabled: bool = True
+    schedule_type: str = "daily"
+    schedule_value: str = Field(default="09:00", max_length=40)
+    timezone: str = Field(default="UTC", max_length=100)
+    delivery_type: str = "telegram"
+    destination: str | None = Field(default=None, max_length=200)
+    include_summary: bool = True
+    include_top_results: bool = True
+    include_csv: bool = False
+    max_results: int = Field(default=50, ge=1, le=500)
+
+
+class ScheduledReportUpdatePayload(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    saved_search_id: int | None = Field(default=None, ge=1)
+    enabled: bool | None = None
+    schedule_type: str | None = None
+    schedule_value: str | None = Field(default=None, max_length=40)
+    timezone: str | None = Field(default=None, max_length=100)
+    delivery_type: str | None = None
+    destination: str | None = Field(default=None, max_length=200)
+    include_summary: bool | None = None
+    include_top_results: bool | None = None
+    include_csv: bool | None = None
+    max_results: int | None = Field(default=None, ge=1, le=500)
+
+
 class DashboardEventState:
     def __init__(self) -> None:
         self.last_event_at: str | None = None
@@ -158,6 +213,7 @@ def create_app(
         event_bus.subscribe(SignalQualityCalculated, event_state.handle)
 
     http_logger = logging.getLogger("x_narrative_tracker.http")
+    scheduler_loop = SchedulerLoop(app_config, event_bus or EventBus())
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -173,9 +229,11 @@ def create_app(
             http_logger, logging.INFO, "dashboard_started", "Dashboard started",
             component="process",
         )
+        scheduler_loop.start()
         try:
             yield
         finally:
+            scheduler_loop.stop()
             log_event(
                 http_logger, logging.INFO, "shutdown_starting",
                 "Dashboard shutdown starting", component="process",
@@ -196,6 +254,7 @@ def create_app(
     )
     app.state.dashboard_service = service
     app.state.dashboard_events = event_state
+    app.state.report_scheduler = scheduler_loop
     app.mount(
         "/static",
         StaticFiles(directory=DASHBOARD_DIR / "static"),
@@ -506,6 +565,76 @@ def create_app(
             "watchlists",
             watchlists=service.watchlists(),
             status=service.status(),
+        )
+
+    @app.get("/saved-searches", response_class=HTMLResponse)
+    def saved_searches_page(request: Request):
+        return render(
+            request, "saved_searches.html", "saved_searches",
+            searches=service.saved_searches(), status=service.status(),
+        )
+
+    @app.get("/saved-searches/new", response_class=HTMLResponse)
+    def saved_search_create_page(request: Request):
+        return render(
+            request, "saved_search_form.html", "saved_searches",
+            saved_search=None, status=service.status(),
+        )
+
+    @app.get("/saved-searches/{search_id}/edit", response_class=HTMLResponse)
+    def saved_search_edit_page(request: Request, search_id: int):
+        detail = service.saved_search(search_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Saved search not found")
+        return render(
+            request, "saved_search_form.html", "saved_searches",
+            saved_search=detail["saved_search"], status=service.status(),
+        )
+
+    @app.get("/saved-searches/{search_id}", response_class=HTMLResponse)
+    def saved_search_detail_page(request: Request, search_id: int):
+        detail = service.saved_search(search_id, preview=True)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Saved search not found")
+        return render(
+            request, "saved_search_detail.html", "saved_searches",
+            detail=detail, status=service.status(),
+        )
+
+    @app.get("/scheduled-reports", response_class=HTMLResponse)
+    def scheduled_reports_page(request: Request):
+        return render(
+            request, "scheduled_reports.html", "scheduled_reports",
+            reports=service.scheduled_reports(), status=service.status(),
+        )
+
+    @app.get("/scheduled-reports/new", response_class=HTMLResponse)
+    def scheduled_report_create_page(request: Request):
+        return render(
+            request, "scheduled_report_form.html", "scheduled_reports",
+            report=None, searches=service.saved_searches(enabled=True),
+            status=service.status(),
+        )
+
+    @app.get("/scheduled-reports/{report_id}/edit", response_class=HTMLResponse)
+    def scheduled_report_edit_page(request: Request, report_id: int):
+        detail = service.scheduled_report(report_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Scheduled report not found")
+        return render(
+            request, "scheduled_report_form.html", "scheduled_reports",
+            report=detail["scheduled_report"], searches=service.saved_searches(),
+            status=service.status(),
+        )
+
+    @app.get("/scheduled-reports/{report_id}", response_class=HTMLResponse)
+    def scheduled_report_detail_page(request: Request, report_id: int):
+        detail = service.scheduled_report(report_id, preview=True)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Scheduled report not found")
+        return render(
+            request, "scheduled_report_detail.html", "scheduled_reports",
+            detail=detail, status=service.status(),
         )
 
     @app.get("/watchlists/new", response_class=HTMLResponse)
@@ -831,6 +960,127 @@ def create_app(
     @app.get("/api/rules")
     def rules_api(enabled: bool | None = None):
         return {"rules": service.rules(enabled)}
+
+    @app.get("/api/saved-searches")
+    def saved_searches_api(
+        enabled: bool | None = None,
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=50, ge=1, le=100),
+    ):
+        rows = service.saved_searches(enabled)
+        start = (page - 1) * page_size
+        return {"items": rows[start:start + page_size], "total": len(rows), "page": page}
+
+    @app.post("/api/saved-searches", status_code=status.HTTP_201_CREATED)
+    def create_saved_search_api(payload: SavedSearchCreatePayload):
+        try:
+            return service.create_saved_search(payload.model_dump(exclude_none=True))
+        except SearchValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/saved-searches/{search_id}")
+    def saved_search_api(search_id: int):
+        result = service.saved_search(search_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Saved search not found")
+        return result
+
+    @app.put("/api/saved-searches/{search_id}")
+    def update_saved_search_api(search_id: int, payload: SavedSearchUpdatePayload):
+        try:
+            return service.update_saved_search(search_id, payload.model_dump(exclude_none=True))
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Saved search not found") from exc
+        except SearchValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.delete("/api/saved-searches/{search_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_saved_search_api(search_id: int):
+        try:
+            service.delete_saved_search(search_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Saved search not found") from exc
+
+    @app.post("/api/saved-searches/{search_id}/run")
+    def run_saved_search_api(search_id: int):
+        try:
+            return service.run_saved_search(search_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Saved search not found") from exc
+        except SearchValidationError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/saved-searches/{search_id}/preview")
+    def preview_saved_search_api(search_id: int):
+        try:
+            return service.run_saved_search(search_id, preview=True)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Saved search not found") from exc
+
+    @app.get("/api/scheduled-reports")
+    def scheduled_reports_api(
+        enabled: bool | None = None,
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=50, ge=1, le=100),
+    ):
+        rows = service.scheduled_reports(enabled)
+        start = (page - 1) * page_size
+        return {"items": rows[start:start + page_size], "total": len(rows), "page": page}
+
+    @app.post("/api/scheduled-reports", status_code=status.HTTP_201_CREATED)
+    def create_scheduled_report_api(payload: ScheduledReportCreatePayload):
+        try:
+            return service.create_scheduled_report(payload.model_dump())
+        except ScheduledReportValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/scheduled-reports/{report_id}")
+    def scheduled_report_api(report_id: int):
+        result = service.scheduled_report(report_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Scheduled report not found")
+        return result
+
+    @app.put("/api/scheduled-reports/{report_id}")
+    def update_scheduled_report_api(report_id: int, payload: ScheduledReportUpdatePayload):
+        try:
+            return service.update_scheduled_report(report_id, payload.model_dump(exclude_none=True))
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Scheduled report not found") from exc
+        except ScheduledReportValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.delete("/api/scheduled-reports/{report_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_scheduled_report_api(report_id: int):
+        try:
+            service.delete_scheduled_report(report_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Scheduled report not found") from exc
+
+    @app.post("/api/scheduled-reports/{report_id}/run")
+    def run_scheduled_report_api(report_id: int):
+        try:
+            return service.run_scheduled_report(report_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Scheduled report not found") from exc
+        except (ScheduledReportValidationError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/scheduled-reports/{report_id}/preview")
+    def preview_scheduled_report_api(report_id: int):
+        result = service.scheduled_report(report_id, preview=True)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Scheduled report not found")
+        return result["preview"]
+
+    @app.get("/api/scheduled-reports/{report_id}/runs")
+    def scheduled_report_runs_api(
+        report_id: int, limit: int = Query(default=100, ge=1, le=500),
+    ):
+        result = service.scheduled_report(report_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Scheduled report not found")
+        return {"items": result["runs"][:limit]}
 
     @app.post("/api/rules", status_code=status.HTTP_201_CREATED)
     def create_rule_api(payload: RuleCreatePayload):

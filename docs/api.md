@@ -64,6 +64,22 @@ Historical endpoints use the API's `period` convention (`7d`, `30d`, `90d`, or `
 
 Create/update bodies are JSON and validated by the same rule/watchlist services used by the CLI. Rule conditions and actions retain their structured JSON form.
 
+## Saved Searches And Scheduled Reports
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET, POST | `/api/saved-searches` | Paginated list or validated creation |
+| GET, PUT, DELETE | `/api/saved-searches/{id}` | Detail, update, or delete |
+| POST | `/api/saved-searches/{id}/preview` | Count and preview without metadata changes |
+| POST | `/api/saved-searches/{id}/run` | Execute and record run metadata |
+| GET, POST | `/api/scheduled-reports` | Paginated list or creation |
+| GET, PUT, DELETE | `/api/scheduled-reports/{id}` | Detail, update, or delete |
+| POST | `/api/scheduled-reports/{id}/preview` | Render without delivery |
+| POST | `/api/scheduled-reports/{id}/run` | Atomically claim and run now |
+| GET | `/api/scheduled-reports/{id}/runs` | Bounded run history |
+
+List endpoints accept `enabled`, `page`, and `page_size` (maximum 100). Run result limits are bounded by the saved definition and `REPORT_MAX_RESULTS`. Validation errors return `422`, missing IDs return `404`, and disabled/already-running state returns `409`. See [saved-searches.md](saved-searches.md) for target-specific filters.
+
 ## Sources And Deduplication
 
 | Method | Path | Purpose |
@@ -121,4 +137,4 @@ Quality lists support period, entity, score band, calculation version, and limit
 
 ## HTML Pages
 
-The Jinja2 dashboard serves `/`, `/signals`, `/performance`, `/history`, `/outcomes`, `/narratives`, `/tokens`, `/rules`, `/watchlists`, `/sources`, `/unified-events`, `/deduplication`, `/graph`, `/quality`, `/ai`, and `/system/*`, plus their documented detail pages. HTML pages poll persisted data; they are not a separate API implementation.
+The Jinja2 dashboard serves `/`, `/signals`, `/performance`, `/history`, `/outcomes`, `/narratives`, `/tokens`, `/rules`, `/watchlists`, `/saved-searches`, `/scheduled-reports`, `/sources`, `/unified-events`, `/deduplication`, `/graph`, `/quality`, `/ai`, and `/system/*`, plus their documented detail pages. HTML pages use the same services as the API; they are not a separate analytics implementation.

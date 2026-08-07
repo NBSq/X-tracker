@@ -21,6 +21,7 @@ REQUIRED_TABLES = frozenset({
     "analyzed_posts", "signal_history", "signal_outcomes", "content_sources",
     "unified_events", "alert_rules", "watchlists", "signal_quality_scores",
     "observability_snapshots",
+    "saved_searches", "scheduled_reports", "scheduled_report_runs",
 })
 
 
@@ -56,7 +57,7 @@ class HealthService:
         components = [
             self.configuration_health(), self.database_health(), self.source_health(),
             self.telegram_health(), self.ai_health(), self.event_bus_health(),
-            self.process_health(),
+            self.report_scheduler_health(), self.process_health(),
         ]
         self.update_gauges()
         return {
@@ -218,6 +219,27 @@ class HealthService:
             summary,
         )
 
+    def report_scheduler_health(self) -> ComponentHealth:
+        performance = self.metrics.performance_summary()
+        failures = performance["error_counts"].get("report_scheduler", 0)
+        enabled_count = self.db.count_enabled_scheduled_reports()
+        due_count = self.db.count_due_scheduled_reports(
+            datetime.now(timezone.utc).isoformat()
+        )
+        status = "disabled" if not self.config.report_scheduler_enabled else (
+            "degraded" if failures else "healthy"
+        )
+        return ComponentHealth(
+            "report_scheduler", status, False,
+            "report scheduler disabled" if status == "disabled" else "report scheduler operational",
+            {
+                "enabled_reports": enabled_count, "due_reports": due_count,
+                "poll_seconds": self.config.report_scheduler_poll_seconds,
+                "last_successful_run": performance["last_success"].get("report_scheduler"),
+                "recent_failure_count": failures,
+            },
+        )
+
     def process_health(self) -> ComponentHealth:
         return ComponentHealth(
             "process", "healthy", True, "process running",
@@ -236,6 +258,13 @@ class HealthService:
         self.metrics.set_gauge("ai_cache_entries", self.db.get_active_ai_cache_count())
         self.metrics.set_gauge(
             "open_quality_recommendations", len(self.db.get_quality_recommendations("open"))
+        )
+        self.metrics.set_gauge(
+            "scheduled_reports_enabled", self.db.count_enabled_scheduled_reports()
+        )
+        self.metrics.set_gauge(
+            "scheduled_reports_due",
+            self.db.count_due_scheduled_reports(datetime.now(timezone.utc).isoformat()),
         )
         events = self.db.get_unified_events(limit=None)
         self.metrics.set_gauge(

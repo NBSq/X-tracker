@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ detail.saved_search.name }}{% endblock %}{% block heading %}{{ detail.saved_search.name }}{% endblock %}
+{% block content %}
+<div class="d-flex gap-2 mb-4"><a class="btn btn-outline-secondary btn-sm" href="/saved-searches/{{ detail.saved_search.id }}/edit">Edit</a><button class="btn btn-dark btn-sm" id="run-search">Run now</button></div>
+<section class="metric-grid mb-4"><article class="metric-card"><span>Target</span><strong>{{ detail.saved_search.target_type|replace('_', ' ')|title }}</strong></article><article class="metric-card"><span>Matches</span><strong>{{ detail.preview.total_matches }}</strong></article><article class="metric-card"><span>Runs</span><strong>{{ detail.saved_search.run_count }}</strong></article><article class="metric-card accent"><span>Status</span><strong>{{ 'Enabled' if detail.saved_search.enabled else 'Disabled' }}</strong></article></section>
+<h2 class="h5">Filters</h2><pre class="rule-editor mb-4">{{ detail.saved_search.filters|tojson(indent=2) }}</pre>
+<h2 class="h5">Preview</h2><div class="table-responsive mb-4"><table class="table table-sm mb-0"><tbody>{% for item in detail.preview.results %}<tr><td><code>{{ item|tojson }}</code></td></tr>{% else %}<tr><td class="empty-state">No matching results.</td></tr>{% endfor %}</tbody></table></div>
+<h2 class="h5">Scheduled Reports</h2><div class="table-responsive"><table class="table mb-0"><tbody>{% for report in detail.scheduled_reports %}<tr><td><a href="/scheduled-reports/{{ report.id }}">{{ report.name }}</a></td><td>{{ report.schedule_type }}</td><td>{{ report.next_run_at }}</td></tr>{% else %}<tr><td class="empty-state">No linked scheduled reports.</td></tr>{% endfor %}</tbody></table></div>
+<script>document.getElementById('run-search').addEventListener('click', async () => { const r = await fetch('/api/saved-searches/{{ detail.saved_search.id }}/run', {method:'POST'}); if (r.ok) location.reload(); else alert((await r.json()).detail); });</script>
+{% endblock %}

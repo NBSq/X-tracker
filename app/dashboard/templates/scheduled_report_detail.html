@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}{{ detail.scheduled_report.name }}{% endblock %}{% block heading %}{{ detail.scheduled_report.name }}{% endblock %}
+{% block content %}
+<div class="d-flex gap-2 mb-4"><a class="btn btn-outline-secondary btn-sm" href="/scheduled-reports/{{ detail.scheduled_report.id }}/edit">Edit</a><button class="btn btn-dark btn-sm" id="run-report">Run now</button></div>
+<section class="metric-grid mb-4"><article class="metric-card"><span>Schedule</span><strong>{{ detail.scheduled_report.schedule_type|title }}</strong></article><article class="metric-card"><span>Next run</span><strong>{{ detail.scheduled_report.next_run_at }}</strong></article><article class="metric-card"><span>Total runs</span><strong>{{ detail.scheduled_report.total_runs }}</strong></article><article class="metric-card accent"><span>Success rate</span><strong>{{ '%.1f'|format(detail.scheduled_report.success_rate) }}%</strong></article></section>
+<h2 class="h5">Message Preview</h2><pre class="rule-editor text-wrap mb-4">{{ detail.preview.message_preview }}</pre>
+<h2 class="h5">Run History</h2><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Started</th><th>Status</th><th>Results</th><th>Delivery</th><th>Duration</th><th>CSV</th></tr></thead><tbody>{% for run in detail.runs %}<tr><td>{{ run.started_at }}</td><td>{{ run.status }}</td><td>{{ run.result_count }}</td><td>{{ run.delivery_status or '—' }}</td><td>{{ run.duration_ms }} ms</td><td>{{ run.csv_path or '—' }}</td></tr>{% else %}<tr><td colspan="6" class="empty-state">No runs yet.</td></tr>{% endfor %}</tbody></table></div>
+<script>document.getElementById('run-report').addEventListener('click', async () => { const r=await fetch('/api/scheduled-reports/{{ detail.scheduled_report.id }}/run',{method:'POST'}); if(r.ok) location.reload(); else alert((await r.json()).detail); });</script>
+{% endblock %}

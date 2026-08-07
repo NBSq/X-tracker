@@ -233,6 +233,19 @@ class TelegramAlerter:
         )
         response.raise_for_status()
 
+    def send_saved_search_report(self, html_text: str) -> None:
+        response = self._post(
+            f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
+            json={
+                "chat_id": self.chat_id,
+                "text": html_text[:4096],
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+
     def send_unified_event_update(self, event, items, reason: str) -> None:
         sources = ", ".join(str(item["source_name"]) for item in items[:6]) or "Unknown"
         conflicts = ""

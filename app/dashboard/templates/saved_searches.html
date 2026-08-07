@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Saved Searches{% endblock %}{% block heading %}Saved Searches{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-end mb-3"><a class="btn btn-dark btn-sm" href="/saved-searches/new">Create search</a></div>
+<div class="table-responsive"><table class="table align-middle mb-0"><thead><tr><th>Name</th><th>Target</th><th>Status</th><th>Limit</th><th>Last run</th><th>Runs</th></tr></thead><tbody>
+{% for item in searches %}<tr><td><a class="signal-link" href="/saved-searches/{{ item.id }}"><strong>{{ item.name }}</strong></a><div class="text-muted small">{{ item.description }}</div></td><td>{{ item.target_type|replace('_', ' ')|title }}</td><td>{{ 'Enabled' if item.enabled else 'Disabled' }}</td><td>{{ item.result_limit }}</td><td>{{ item.last_run_at or 'Never' }}</td><td>{{ item.run_count }}</td></tr>{% else %}<tr><td colspan="6" class="empty-state">No saved searches.</td></tr>{% endfor %}
+</tbody></table></div>
+{% endblock %}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -382,6 +383,19 @@ class CSVExportService:
             files.append(self._export_quality_recommendations(timestamp, from_value, to_value))
         return CSVExportResult(tuple(files))
 
+    def export_rows(
+        self,
+        stem: str,
+        columns: Sequence[str],
+        rows: Sequence[Mapping[str, object]],
+    ) -> ExportedCSV:
+        """Write filtered rows through the existing Excel-compatible CSV path."""
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        safe_stem = _safe_filename_stem(stem)
+        timestamp = self.clock().strftime("%Y-%m-%d_%H%M%S")
+        path = self._write(safe_stem, timestamp, columns, rows)
+        return ExportedCSV(safe_stem, path, len(rows))
+
     def _quality_service(self) -> SignalQualityService:
         return SignalQualityService(self.database, load_config())
 
@@ -713,7 +727,6 @@ class CSVExportService:
             path = self.output_dir / f"{stem}_{timestamp}_{suffix}.csv"
             suffix += 1
         return path
-
     def _export_watchlists(self, timestamp: str) -> tuple[ExportedCSV, ...]:
         service = WatchlistService(self.database)
         watchlist_rows = []
@@ -804,6 +817,11 @@ class CSVExportService:
             rows,
         )
         return ExportedCSV("watchlist_signals", path, len(rows))
+
+
+def _safe_filename_stem(value: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip()).strip("._-")
+    return (normalized or "report")[:80]
 
 
 def _cell(value: object) -> object:

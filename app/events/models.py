@@ -305,3 +305,40 @@ class QualityRecommendationCreated:
     entity_type: str
     entity_id: str
     severity: str
+
+
+@dataclass(frozen=True)
+class SavedSearchExecuted:
+    saved_search_id: int
+    target_type: str
+    result_count: int
+    total_matches: int
+    executed_at: str
+
+
+@dataclass(frozen=True)
+class ScheduledReportStarted:
+    scheduled_report_id: int
+    run_id: int
+
+
+@dataclass(frozen=True)
+class ScheduledReportCompleted:
+    scheduled_report_id: int
+    run_id: int
+    result_count: int
+    duration_ms: int
+
+
+@dataclass(frozen=True)
+class ScheduledReportFailed:
+    scheduled_report_id: int
+    run_id: int
+    error_type: str
+
+
+@dataclass(frozen=True)
+class ScheduledReportDelivered:
+    scheduled_report_id: int
+    run_id: int
+    delivery_type: str

@@ -28,6 +28,11 @@ from app.events.models import (
     QualityImprovementDetected,
     QualityRecommendationCreated,
     SignalQualityCalculated,
+    SavedSearchExecuted,
+    ScheduledReportStarted,
+    ScheduledReportCompleted,
+    ScheduledReportFailed,
+    ScheduledReportDelivered,
 )
 
 __all__ = [
@@ -60,4 +65,9 @@ __all__ = [
     "QualityImprovementDetected",
     "QualityRecommendationCreated",
     "SignalQualityCalculated",
+    "SavedSearchExecuted",
+    "ScheduledReportStarted",
+    "ScheduledReportCompleted",
+    "ScheduledReportFailed",
+    "ScheduledReportDelivered",
 ]

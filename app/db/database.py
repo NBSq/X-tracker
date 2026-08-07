@@ -474,6 +474,62 @@ class Database:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS saved_searches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                description TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+                target_type TEXT NOT NULL,
+                filters_json TEXT NOT NULL DEFAULT '{}',
+                sort_by TEXT NOT NULL,
+                sort_direction TEXT NOT NULL CHECK(sort_direction IN ('asc', 'desc')),
+                result_limit INTEGER NOT NULL CHECK(result_limit BETWEEN 1 AND 500),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_run_at TEXT,
+                run_count INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS scheduled_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                saved_search_id INTEGER NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+                schedule_type TEXT NOT NULL CHECK(schedule_type IN ('daily', 'weekly', 'interval_hours')),
+                schedule_value TEXT NOT NULL,
+                timezone TEXT NOT NULL DEFAULT 'UTC',
+                delivery_type TEXT NOT NULL CHECK(delivery_type IN ('telegram', 'none')),
+                destination TEXT,
+                include_summary INTEGER NOT NULL DEFAULT 1 CHECK(include_summary IN (0, 1)),
+                include_top_results INTEGER NOT NULL DEFAULT 1 CHECK(include_top_results IN (0, 1)),
+                include_csv INTEGER NOT NULL DEFAULT 0 CHECK(include_csv IN (0, 1)),
+                max_results INTEGER NOT NULL CHECK(max_results BETWEEN 1 AND 500),
+                last_run_at TEXT,
+                next_run_at TEXT NOT NULL,
+                last_status TEXT,
+                last_error_type TEXT,
+                total_runs INTEGER NOT NULL DEFAULT 0,
+                successful_runs INTEGER NOT NULL DEFAULT 0,
+                failed_runs INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (saved_search_id) REFERENCES saved_searches(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS scheduled_report_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scheduled_report_id INTEGER NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                status TEXT NOT NULL CHECK(status IN ('running', 'success', 'failed')),
+                result_count INTEGER NOT NULL DEFAULT 0,
+                delivery_status TEXT,
+                csv_path TEXT,
+                error_type TEXT,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (scheduled_report_id) REFERENCES scheduled_reports(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_signal_outcomes_signal_id
             ON signal_outcomes(signal_id);
 
@@ -566,6 +622,15 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_observability_snapshots_timestamp
             ON observability_snapshots(timestamp DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_saved_searches_enabled_target
+            ON saved_searches(enabled, target_type, updated_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_scheduled_reports_due
+            ON scheduled_reports(enabled, next_run_at, last_status);
+
+            CREATE INDEX IF NOT EXISTS idx_scheduled_report_runs_report
+            ON scheduled_report_runs(scheduled_report_id, started_at DESC);
             """
         )
         self._add_column_if_missing("signal_history", "mentions_count", "INTEGER")
@@ -641,6 +706,11 @@ class Database:
         )
 
     def reset(self) -> None:
+        self.connection.execute("DELETE FROM scheduled_report_runs")
+        self.connection.execute(
+            """UPDATE scheduled_reports SET last_run_at = NULL, last_status = NULL,
+            last_error_type = NULL, total_runs = 0, successful_runs = 0, failed_runs = 0"""
+        )
         self.connection.execute("DELETE FROM quality_recommendations")
         self.connection.execute("DELETE FROM quality_aggregates")
         self.connection.execute("DELETE FROM signal_quality_scores")
@@ -3611,6 +3681,462 @@ class Database:
             "last_analysis_at": self._table_max("analyzed_posts", "analyzed_at"),
             "last_signal_at": self._table_max("signal_history", "timestamp"),
         }
+
+    # Saved searches and scheduled reports keep persistence and allowlisted query
+    # execution in the existing database layer.
+    def create_saved_search(self, values: dict[str, Any]) -> int:
+        cursor = self.connection.execute(
+            """INSERT INTO saved_searches (
+                name, description, enabled, target_type, filters_json,
+                sort_by, sort_direction, result_limit
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                values["name"], values.get("description", ""),
+                int(bool(values.get("enabled", True))), values["target_type"],
+                values["filters_json"], values["sort_by"],
+                values["sort_direction"], values["result_limit"],
+            ),
+        )
+        self.connection.commit()
+        return int(cursor.lastrowid)
+
+    def get_saved_searches(self, enabled: bool | None = None) -> list[sqlite3.Row]:
+        where = "WHERE enabled = ?" if enabled is not None else ""
+        params = (int(enabled),) if enabled is not None else ()
+        return self.connection.execute(
+            f"""SELECT * FROM saved_searches {where}
+            ORDER BY name COLLATE NOCASE, id""", params,
+        ).fetchall()
+
+    def get_saved_search(self, search_id: int) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM saved_searches WHERE id = ?", (search_id,)
+        ).fetchone()
+
+    def update_saved_search(self, search_id: int, values: dict[str, Any]) -> bool:
+        allowed = {
+            "name", "description", "enabled", "target_type", "filters_json",
+            "sort_by", "sort_direction", "result_limit",
+        }
+        assignments: list[str] = []
+        params: list[object] = []
+        for key, value in values.items():
+            if key not in allowed:
+                raise ValueError(f"Unsupported saved search field: {key}")
+            if key == "enabled":
+                value = int(bool(value))
+            assignments.append(f"{key} = ?")
+            params.append(value)
+        if not assignments:
+            return self.get_saved_search(search_id) is not None
+        assignments.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(search_id)
+        cursor = self.connection.execute(
+            f"UPDATE saved_searches SET {', '.join(assignments)} WHERE id = ?", params,
+        )
+        self.connection.commit()
+        return bool(cursor.rowcount)
+
+    def delete_saved_search(self, search_id: int) -> bool:
+        cursor = self.connection.execute(
+            "DELETE FROM saved_searches WHERE id = ?", (search_id,)
+        )
+        self.connection.commit()
+        return bool(cursor.rowcount)
+
+    def record_saved_search_run(self, search_id: int, timestamp: str) -> None:
+        self.connection.execute(
+            """UPDATE saved_searches SET last_run_at = ?, run_count = run_count + 1,
+            updated_at = CURRENT_TIMESTAMP WHERE id = ?""", (timestamp, search_id),
+        )
+        self.connection.commit()
+
+    def create_scheduled_report(self, values: dict[str, Any]) -> int:
+        cursor = self.connection.execute(
+            """INSERT INTO scheduled_reports (
+                name, saved_search_id, enabled, schedule_type, schedule_value,
+                timezone, delivery_type, destination, include_summary,
+                include_top_results, include_csv, max_results, next_run_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                values["name"], values["saved_search_id"],
+                int(bool(values.get("enabled", True))), values["schedule_type"],
+                values["schedule_value"], values["timezone"], values["delivery_type"],
+                values.get("destination"), int(bool(values.get("include_summary", True))),
+                int(bool(values.get("include_top_results", True))),
+                int(bool(values.get("include_csv", False))), values["max_results"],
+                values["next_run_at"],
+            ),
+        )
+        self.connection.commit()
+        return int(cursor.lastrowid)
+
+    def get_scheduled_reports(self, enabled: bool | None = None) -> list[sqlite3.Row]:
+        where = "WHERE report.enabled = ?" if enabled is not None else ""
+        params = (int(enabled),) if enabled is not None else ()
+        return self.connection.execute(
+            f"""SELECT report.*, search.name AS saved_search_name,
+            CASE WHEN report.total_runs > 0
+                 THEN 100.0 * report.successful_runs / report.total_runs ELSE 0 END
+                 AS success_rate
+            FROM scheduled_reports AS report
+            JOIN saved_searches AS search ON search.id = report.saved_search_id
+            {where} ORDER BY report.next_run_at, report.id""", params,
+        ).fetchall()
+
+    def get_scheduled_report(self, report_id: int) -> sqlite3.Row | None:
+        return self.connection.execute(
+            """SELECT report.*, search.name AS saved_search_name,
+            CASE WHEN report.total_runs > 0
+                 THEN 100.0 * report.successful_runs / report.total_runs ELSE 0 END
+                 AS success_rate
+            FROM scheduled_reports AS report
+            JOIN saved_searches AS search ON search.id = report.saved_search_id
+            WHERE report.id = ?""", (report_id,),
+        ).fetchone()
+
+    def update_scheduled_report(self, report_id: int, values: dict[str, Any]) -> bool:
+        allowed = {
+            "name", "saved_search_id", "enabled", "schedule_type", "schedule_value",
+            "timezone", "delivery_type", "destination", "include_summary",
+            "include_top_results", "include_csv", "max_results", "next_run_at",
+        }
+        boolean_fields = {
+            "enabled", "include_summary", "include_top_results", "include_csv",
+        }
+        assignments: list[str] = []
+        params: list[object] = []
+        for key, value in values.items():
+            if key not in allowed:
+                raise ValueError(f"Unsupported scheduled report field: {key}")
+            if key in boolean_fields:
+                value = int(bool(value))
+            assignments.append(f"{key} = ?")
+            params.append(value)
+        if not assignments:
+            return self.get_scheduled_report(report_id) is not None
+        assignments.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(report_id)
+        cursor = self.connection.execute(
+            f"UPDATE scheduled_reports SET {', '.join(assignments)} WHERE id = ?", params,
+        )
+        self.connection.commit()
+        return bool(cursor.rowcount)
+
+    def delete_scheduled_report(self, report_id: int) -> bool:
+        cursor = self.connection.execute(
+            "DELETE FROM scheduled_reports WHERE id = ?", (report_id,)
+        )
+        self.connection.commit()
+        return bool(cursor.rowcount)
+
+    def get_due_scheduled_reports(self, now: str, limit: int = 50) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """SELECT report.*, search.name AS saved_search_name
+            FROM scheduled_reports AS report
+            JOIN saved_searches AS search ON search.id = report.saved_search_id
+            WHERE report.enabled = 1 AND search.enabled = 1
+              AND report.next_run_at <= ?
+              AND (report.last_status IS NULL OR report.last_status != 'running'
+                   OR report.last_run_at < datetime(?, '-2 hours'))
+            ORDER BY report.next_run_at, report.id LIMIT ?""", (now, now, limit),
+        ).fetchall()
+
+    def claim_scheduled_report(self, report_id: int, started_at: str, *, force: bool) -> int | None:
+        due_clause = "" if force else "AND next_run_at <= ?"
+        params: list[object] = [started_at, report_id]
+        if not force:
+            params.append(started_at)
+        params.append(started_at)
+        cursor = self.connection.execute(
+            f"""UPDATE scheduled_reports SET last_status = 'running',
+            last_run_at = ?, last_error_type = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND enabled = 1 {due_clause}
+              AND (last_status IS NULL OR last_status != 'running'
+                   OR last_run_at < datetime(?, '-2 hours'))""", params,
+        )
+        if not cursor.rowcount:
+            self.connection.rollback()
+            return None
+        run = self.connection.execute(
+            """INSERT INTO scheduled_report_runs (
+                scheduled_report_id, started_at, status
+            ) VALUES (?, ?, 'running')""", (report_id, started_at),
+        )
+        self.connection.commit()
+        return int(run.lastrowid)
+
+    def complete_scheduled_report_run(
+        self, run_id: int, *, completed_at: str, status: str,
+        result_count: int, delivery_status: str, csv_path: str | None,
+        error_type: str | None, duration_ms: int, next_run_at: str,
+    ) -> None:
+        run = self.connection.execute(
+            "SELECT scheduled_report_id FROM scheduled_report_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        if run is None:
+            raise KeyError(run_id)
+        self.connection.execute(
+            """UPDATE scheduled_report_runs SET completed_at = ?, status = ?,
+            result_count = ?, delivery_status = ?, csv_path = ?, error_type = ?,
+            duration_ms = ? WHERE id = ?""",
+            (completed_at, status, result_count, delivery_status, csv_path,
+             error_type, duration_ms, run_id),
+        )
+        success = int(status == "success")
+        failed = int(status == "failed")
+        self.connection.execute(
+            """UPDATE scheduled_reports SET last_status = ?, last_error_type = ?,
+            next_run_at = ?, total_runs = total_runs + 1,
+            successful_runs = successful_runs + ?, failed_runs = failed_runs + ?,
+            updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
+            (status, error_type, next_run_at, success, failed,
+             int(run["scheduled_report_id"])),
+        )
+        self.connection.commit()
+
+    def get_scheduled_report_runs(
+        self, report_id: int, limit: int = 100,
+    ) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """SELECT * FROM scheduled_report_runs WHERE scheduled_report_id = ?
+            ORDER BY started_at DESC, id DESC LIMIT ?""", (report_id, limit),
+        ).fetchall()
+
+    def count_enabled_scheduled_reports(self) -> int:
+        return int(self.connection.execute(
+            "SELECT COUNT(*) FROM scheduled_reports WHERE enabled = 1"
+        ).fetchone()[0])
+
+    def count_due_scheduled_reports(self, now: str) -> int:
+        return int(self.connection.execute(
+            """SELECT COUNT(*) FROM scheduled_reports
+            WHERE enabled = 1 AND next_run_at <= ?
+              AND COALESCE(last_status, '') != 'running'""", (now,)
+        ).fetchone()[0])
+
+    def search_signal_records(
+        self, filters: dict[str, Any], sort_by: str, sort_direction: str,
+        limit: int, *, quality_only: bool = False,
+    ) -> tuple[list[sqlite3.Row], int]:
+        conditions: list[str] = []
+        params: list[object] = []
+        self._append_saved_signal_filters(conditions, params, filters)
+        if quality_only:
+            conditions.append("quality.id IS NOT NULL")
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        sort_columns = {
+            "created_at": "signal.timestamp", "hype_score": "signal.hype_score",
+            "momentum_score": "signal.momentum_score", "confidence": "signal.confidence",
+            "mentions": "signal.mentions_count", "quality_score": "quality.quality_score",
+            "source_count": "event.source_count", "evidence_count": "quality.evidence_count",
+        }
+        order = sort_columns[sort_by]
+        direction = "ASC" if sort_direction == "asc" else "DESC"
+        joins = """
+            LEFT JOIN unified_events AS event ON event.id = signal.unified_event_id
+            LEFT JOIN signal_quality_scores AS quality ON quality.id = (
+                SELECT candidate.id FROM signal_quality_scores AS candidate
+                WHERE candidate.signal_id = signal.id
+                ORDER BY candidate.calculation_version DESC, candidate.id DESC LIMIT 1
+            )
+            LEFT JOIN signal_outcomes AS outcome ON outcome.id = (
+                SELECT candidate.id FROM signal_outcomes AS candidate
+                WHERE candidate.signal_id = signal.id
+                ORDER BY candidate.evaluation_window_hours DESC, candidate.id DESC LIMIT 1
+            )
+            LEFT JOIN signal_ai_analyses AS ai ON ai.id = (
+                SELECT candidate.id FROM signal_ai_analyses AS candidate
+                WHERE candidate.signal_id = signal.id
+                ORDER BY candidate.created_at DESC, candidate.id DESC LIMIT 1
+            )
+        """
+        total = int(self.connection.execute(
+            f"SELECT COUNT(*) FROM signal_history AS signal {joins} {where}", params,
+        ).fetchone()[0])
+        rows = self.connection.execute(
+            f"""SELECT signal.*, outcome.status AS outcome_status,
+            quality.quality_score, quality.classification AS quality_classification,
+            quality.noise_risk, quality.evaluation_coverage, quality.evidence_count,
+            event.source_count, event.item_count, event.conflict_count,
+            ai.provider AS ai_provider, ai.action AS ai_action, ai.risk_level AS ai_risk_level
+            FROM signal_history AS signal {joins} {where}
+            ORDER BY {order} {direction}, signal.id DESC LIMIT ?""", [*params, limit],
+        ).fetchall()
+        return rows, total
+
+    def _append_saved_signal_filters(
+        self, conditions: list[str], params: list[object], filters: dict[str, Any],
+    ) -> None:
+        scalar = {
+            "token": "signal.token", "narrative": "signal.narrative",
+            "outcome": "outcome.status", "quality_classification": "quality.classification",
+            "ai_provider": "ai.provider", "ai_action": "ai.action",
+            "ai_risk_level": "ai.risk_level",
+        }
+        for key, column in scalar.items():
+            if key in filters:
+                conditions.append(f"{column} = ? COLLATE NOCASE")
+                params.append(filters[key])
+        ranges = {
+            "hype_min": ("signal.hype_score", ">="), "hype_max": ("signal.hype_score", "<="),
+            "momentum_min": ("signal.momentum_score", ">="), "momentum_max": ("signal.momentum_score", "<="),
+            "confidence_min": ("signal.confidence", ">="), "confidence_max": ("signal.confidence", "<="),
+            "quality_min": ("quality.quality_score", ">="), "quality_max": ("quality.quality_score", "<="),
+            "source_count_min": ("event.source_count", ">="),
+            "item_count_min": ("event.item_count", ">="),
+            "minimum_evidence_count": ("quality.evidence_count", ">="),
+        }
+        for key, (column, operator) in ranges.items():
+            if key in filters:
+                conditions.append(f"COALESCE({column}, 0) {operator} ?")
+                params.append(filters[key])
+        if "date_from" in filters:
+            conditions.append("signal.timestamp >= ?")
+            params.append(filters["date_from"])
+        if "date_to" in filters:
+            conditions.append("signal.timestamp < datetime(?, '+1 day')")
+            params.append(filters["date_to"])
+        for key, table, association, foreign_key in (
+            ("watchlist", "watchlists", "signal_watchlists", "watchlist_id"),
+            ("rule", "alert_rules", "signal_rule_matches", "rule_id"),
+        ):
+            if key in filters:
+                values = filters[key] if isinstance(filters[key], list) else [filters[key]]
+                placeholders = ",".join("?" for _ in values)
+                conditions.append(
+                    f"EXISTS (SELECT 1 FROM {association} AS association "
+                    f"JOIN {table} AS named ON named.id = association.{foreign_key} "
+                    f"WHERE association.signal_id = signal.id "
+                    f"AND named.name COLLATE NOCASE IN ({placeholders}))"
+                )
+                params.extend(values)
+        if "source" in filters:
+            values = filters["source"] if isinstance(filters["source"], list) else [filters["source"]]
+            placeholders = ",".join("?" for _ in values)
+            conditions.append(
+                "EXISTS (SELECT 1 FROM unified_event_items AS membership "
+                "JOIN content_items AS item ON item.id = membership.content_item_id "
+                "JOIN content_sources AS source ON source.id = item.source_id "
+                "WHERE membership.unified_event_id = signal.unified_event_id "
+                f"AND source.name COLLATE NOCASE IN ({placeholders}))"
+            )
+            params.extend(values)
+
+    def search_unified_event_records(
+        self, filters: dict[str, Any], sort_by: str, sort_direction: str, limit: int,
+    ) -> tuple[list[sqlite3.Row], int]:
+        conditions: list[str] = []
+        params: list[object] = []
+        for key, json_column in (("token", "event.tokens_json"), ("narrative", "event.narratives_json")):
+            if key in filters:
+                conditions.append(
+                    f"EXISTS (SELECT 1 FROM json_each({json_column}) WHERE value = ? COLLATE NOCASE)"
+                )
+                params.append(filters[key])
+        ranges = {
+            "hype_min": ("event.hype_score", ">="), "hype_max": ("event.hype_score", "<="),
+            "momentum_min": ("event.momentum_score", ">="), "momentum_max": ("event.momentum_score", "<="),
+            "confidence_min": ("event.confidence", ">="), "confidence_max": ("event.confidence", "<="),
+            "source_count_min": ("event.source_count", ">="), "item_count_min": ("event.item_count", ">="),
+        }
+        for key, (column, operator) in ranges.items():
+            if key in filters:
+                conditions.append(f"{column} {operator} ?")
+                params.append(filters[key])
+        if "date_from" in filters:
+            conditions.append("event.last_seen_at >= ?")
+            params.append(filters["date_from"])
+        if "date_to" in filters:
+            conditions.append("event.first_seen_at < datetime(?, '+1 day')")
+            params.append(filters["date_to"])
+        conflict = filters.get("conflict_status")
+        if conflict == "has_conflicts":
+            conditions.append("event.conflict_count > 0")
+        elif conflict == "requires_review":
+            conditions.append("event.requires_review = 1")
+        elif conflict == "clear":
+            conditions.append("event.conflict_count = 0 AND event.requires_review = 0")
+        if "source" in filters:
+            values = filters["source"] if isinstance(filters["source"], list) else [filters["source"]]
+            placeholders = ",".join("?" for _ in values)
+            conditions.append(
+                "EXISTS (SELECT 1 FROM unified_event_items AS membership "
+                "JOIN content_items AS item ON item.id = membership.content_item_id "
+                "JOIN content_sources AS source ON source.id = item.source_id "
+                "WHERE membership.unified_event_id = event.id "
+                f"AND source.name COLLATE NOCASE IN ({placeholders}))"
+            )
+            params.extend(values)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        order = {
+            "created_at": "event.last_seen_at", "hype_score": "event.hype_score",
+            "momentum_score": "event.momentum_score", "confidence": "event.confidence",
+            "source_count": "event.source_count", "item_count": "event.item_count",
+        }[sort_by]
+        direction = "ASC" if sort_direction == "asc" else "DESC"
+        total = int(self.connection.execute(
+            f"SELECT COUNT(*) FROM unified_events AS event {where}", params,
+        ).fetchone()[0])
+        rows = self.connection.execute(
+            f"""SELECT event.* FROM unified_events AS event {where}
+            ORDER BY {order} {direction}, event.id DESC LIMIT ?""", [*params, limit],
+        ).fetchall()
+        return rows, total
+
+    def search_entity_records(
+        self, entity_type: str, filters: dict[str, Any], sort_by: str,
+        sort_direction: str, limit: int,
+    ) -> tuple[list[sqlite3.Row], int]:
+        column = "signal.narrative" if entity_type == "narratives" else "signal.token"
+        name_filter = "narrative" if entity_type == "narratives" else "token"
+        conditions = [f"{column} IS NOT NULL", f"TRIM({column}) != ''"]
+        params: list[object] = []
+        if name_filter in filters:
+            conditions.append(f"{column} = ? COLLATE NOCASE")
+            params.append(filters[name_filter])
+        if "date_from" in filters:
+            conditions.append("signal.timestamp >= ?")
+            params.append(filters["date_from"])
+        if "date_to" in filters:
+            conditions.append("signal.timestamp < datetime(?, '+1 day')")
+            params.append(filters["date_to"])
+        where = " AND ".join(conditions)
+        having: list[str] = []
+        having_params: list[object] = []
+        aggregate_filters = {
+            "hype_min": ("AVG(signal.hype_score)", ">="),
+            "hype_max": ("AVG(signal.hype_score)", "<="),
+            "momentum_min": ("AVG(signal.momentum_score)", ">="),
+            "momentum_max": ("AVG(signal.momentum_score)", "<="),
+            "confidence_min": ("AVG(signal.confidence)", ">="),
+            "confidence_max": ("AVG(signal.confidence)", "<="),
+        }
+        for key, (field, operator) in aggregate_filters.items():
+            if key in filters:
+                having.append(f"{field} {operator} ?")
+                having_params.append(filters[key])
+        having_sql = f"HAVING {' AND '.join(having)}" if having else ""
+        base = f"""SELECT {column} AS name, COUNT(*) AS mentions_count,
+            AVG(signal.hype_score) AS hype_score,
+            AVG(signal.momentum_score) AS momentum_score,
+            AVG(signal.confidence) AS confidence, MAX(signal.timestamp) AS last_seen_at
+            FROM signal_history AS signal WHERE {where}
+            GROUP BY {column} {having_sql}"""
+        total = int(self.connection.execute(
+            f"SELECT COUNT(*) FROM ({base})", [*params, *having_params],
+        ).fetchone()[0])
+        order = {
+            "name": "name", "mentions": "mentions_count", "hype_score": "hype_score",
+            "momentum_score": "momentum_score", "confidence": "confidence",
+            "created_at": "last_seen_at",
+        }[sort_by]
+        direction = "ASC" if sort_direction == "asc" else "DESC"
+        rows = self.connection.execute(
+            f"{base} ORDER BY {order} {direction}, name COLLATE NOCASE LIMIT ?",
+            [*params, *having_params, limit],
+        ).fetchall()
+        return rows, total
 
     def has_table(self, table: str) -> bool:
         row = self.connection.execute(

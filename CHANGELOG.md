@@ -2,7 +2,7 @@
 
 All notable changes to `x-narrative-tracker` are documented here. The project follows semantic versioning from the first stable release onward.
 
-## [1.0.0] - 2026-08-06
+## [1.0.0] - 2026-08-07
 
 ### Added
 
@@ -17,6 +17,8 @@ All notable changes to `x-narrative-tracker` are documented here. The project fo
 - FastAPI/Jinja2 dashboard and REST API for signals, analytics, sources, events, rules, watchlists, graph, quality, and system health.
 - Structured logging, correlation IDs, Prometheus metrics, health/readiness endpoints, runtime diagnostics, and coarse observability snapshots.
 - Non-root Docker deployment with persistent SQLite storage, graceful tracker lifecycle, health checks, and CI smoke validation.
+- Allowlisted saved searches across signals, events, entities, graph relationships, and signal quality.
+- SQLite-backed daily/weekly scheduled reports with previews, Telegram delivery, CSV retention, run history, and optional cached AI summaries.
 
 ### Changed
 

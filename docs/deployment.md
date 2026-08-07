@@ -1,6 +1,6 @@
 # Docker Production Deployment
 
-This guide deploys `x-narrative-tracker` as one hardened application container. Uvicorn serves the FastAPI dashboard while a managed background thread runs the existing RSS ingestion cycle. Keeping both workloads in one Python process avoids independent container writers competing for SQLite. Each thread uses its own SQLite connection; WAL mode and a 30-second busy timeout handle short read/write overlap.
+This guide deploys `x-narrative-tracker` as one hardened application container. Uvicorn serves the FastAPI dashboard while managed background threads run RSS ingestion and the optional saved-search report scheduler. Keeping these workloads in one Python process avoids independent container writers competing for SQLite. Each thread uses its own SQLite connection; WAL mode and a 30-second busy timeout handle short read/write overlap.
 
 ## Prerequisites
 
@@ -40,6 +40,8 @@ Important deployment values:
 | `AI_PROVIDER` | `mock` | `mock`, `openai`, or `auto` |
 | `LOG_FORMAT` | `json` | Container-friendly stdout logging |
 | `TRACKER_SHUTDOWN_TIMEOUT_SECONDS` | `30` | Wait for an active tracker cycle during SIGTERM |
+| `REPORT_SCHEDULER_ENABLED` | `true` | Checks and atomically claims due scheduled reports |
+| `REPORT_OUTPUT_DIR` | `exports/scheduled_reports` | Scheduler-owned CSV retention directory |
 
 Compose owns the container paths for the database, resources, source configuration, and bind address. Do not override `DATABASE_PATH`, `DASHBOARD_HOST`, or the bundled resource paths in normal Compose deployments.
 
@@ -84,7 +86,7 @@ The default `BIND_ADDRESS=127.0.0.1` exposes the dashboard only to the VPS itsel
 | `tracker_data` | `/app/data` | SQLite database, AI cache, source state, rules, watchlists, graph data, quality data, signal outcomes, and observability snapshots |
 | `tracker_exports` | `/app/exports` | CSV exports and SQLite backup files created inside the container |
 
-All durable application state currently lives in SQLite. OpenAI response cache, source fetch state, generated configuration state, and observability history are database tables, not separate files. `/tmp` and Python caches are disposable. Do not use `docker compose down --volumes` during an upgrade unless permanent data deletion is intentional.
+All durable application state currently lives in SQLite. OpenAI response cache, source fetch state, saved searches, report definitions/run history, generated configuration state, and observability history are database tables. Scheduled CSV files live under `/app/exports`. Keep one scheduler-enabled container per SQLite volume; multi-container scheduling requires an external coordinator. `/tmp` and Python caches are disposable. Do not use `docker compose down --volumes` during an upgrade unless permanent data deletion is intentional.
 
 Inspect Docker’s volume metadata:
 

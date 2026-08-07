@@ -20,6 +20,8 @@ from app.ingestion.service import MultiSourceIngestionService
 from app.graph.service import GraphService
 from app.quality.service import SignalQualityService
 from app.observability.health import HealthService, SnapshotService
+from app.search import SearchService
+from app.reports import ReportScheduler
 
 
 class DashboardService:
@@ -84,6 +86,113 @@ class DashboardService:
         db = self._database()
         try:
             return SnapshotService(db, self.config).save_if_due(force=force)
+        finally:
+            db.close()
+
+    def saved_searches(self, enabled: bool | None = None) -> list[dict[str, Any]]:
+        db = self._database()
+        try:
+            return [item.as_dict() for item in SearchService(db, self.config).list(enabled)]
+        finally:
+            db.close()
+
+    def saved_search(self, search_id: int, *, preview: bool = False) -> dict[str, Any] | None:
+        db = self._database()
+        try:
+            search_service = SearchService(db, self.config)
+            search = search_service.get(search_id)
+            if search is None:
+                return None
+            reports = [
+                item.as_dict() for item in ReportScheduler(db, self.config).list()
+                if item.saved_search_id == search_id
+            ]
+            return {
+                "saved_search": search.as_dict(), "scheduled_reports": reports,
+                "preview": search_service.preview(search_id).as_dict() if preview else None,
+            }
+        finally:
+            db.close()
+
+    def create_saved_search(self, payload: dict[str, Any]) -> dict[str, Any]:
+        db = self._database()
+        try:
+            return SearchService(db, self.config).create(payload).as_dict()
+        finally:
+            db.close()
+
+    def update_saved_search(self, search_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        db = self._database()
+        try:
+            return SearchService(db, self.config).update(search_id, payload).as_dict()
+        finally:
+            db.close()
+
+    def delete_saved_search(self, search_id: int) -> None:
+        db = self._database()
+        try:
+            SearchService(db, self.config).delete(search_id)
+        finally:
+            db.close()
+
+    def run_saved_search(self, search_id: int, *, preview: bool = False) -> dict[str, Any]:
+        db = self._database()
+        try:
+            search = SearchService(db, self.config)
+            result = search.preview(search_id) if preview else search.run(search_id)
+            return result.as_dict()
+        finally:
+            db.close()
+
+    def scheduled_reports(self, enabled: bool | None = None) -> list[dict[str, Any]]:
+        db = self._database()
+        try:
+            return [item.as_dict() for item in ReportScheduler(db, self.config).list(enabled)]
+        finally:
+            db.close()
+
+    def scheduled_report(self, report_id: int, *, preview: bool = False) -> dict[str, Any] | None:
+        db = self._database()
+        try:
+            scheduler = ReportScheduler(db, self.config)
+            report = scheduler.get(report_id)
+            if report is None:
+                return None
+            return {
+                "scheduled_report": report.as_dict(), "runs": scheduler.runs(report_id),
+                "preview": scheduler.preview(report_id) if preview else None,
+            }
+        finally:
+            db.close()
+
+    def create_scheduled_report(self, payload: dict[str, Any]) -> dict[str, Any]:
+        db = self._database()
+        try:
+            return ReportScheduler(db, self.config).create(payload).as_dict()
+        finally:
+            db.close()
+
+    def update_scheduled_report(self, report_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        db = self._database()
+        try:
+            return ReportScheduler(db, self.config).update(report_id, payload).as_dict()
+        finally:
+            db.close()
+
+    def delete_scheduled_report(self, report_id: int) -> None:
+        db = self._database()
+        try:
+            ReportScheduler(db, self.config).delete(report_id)
+        finally:
+            db.close()
+
+    def run_scheduled_report(self, report_id: int) -> dict[str, Any]:
+        db = self._database()
+        try:
+            result = ReportScheduler(db, self.config).run(report_id, force=True)
+            if result is None:
+                raise RuntimeError("Scheduled report is already running")
+            return result
         finally:
             db.close()
 

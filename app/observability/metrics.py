@@ -20,6 +20,7 @@ OPERATIONS = frozenset({
     "signal_creation", "ai_analysis", "rule_evaluation", "watchlist_matching",
     "graph_update", "quality_calculation", "telegram_send", "database_query",
     "http_request", "event_handler",
+    "saved_search", "scheduled_report",
 })
 
 
@@ -49,6 +50,9 @@ class ObservabilityMetrics:
             "graph_updates_total", "quality_scores_calculated_total",
             "event_bus_events_published_total", "event_bus_handler_failures_total",
             "database_errors_total", "http_requests_total",
+            "saved_search_runs_total", "saved_search_failures_total",
+            "scheduled_report_runs_total", "scheduled_report_failures_total",
+            "scheduled_report_delivery_failures_total",
         )
         self.counters = {
             name: Counter(name, name.replace("_", " "), registry=self.registry)
@@ -64,6 +68,7 @@ class ObservabilityMetrics:
             "ai_requests_today", "ai_cache_entries", "open_quality_recommendations",
             "process_memory_bytes", "process_cpu_percent", "process_uptime_seconds",
             "database_size_bytes", "process_threads", "process_open_files",
+            "scheduled_reports_due", "scheduled_reports_enabled",
         )
         self.gauges = {
             name: Gauge(name, name.replace("_", " "), registry=self.registry)
@@ -85,6 +90,10 @@ class ObservabilityMetrics:
         self.http_latency = Histogram(
             "http_request_duration_seconds", "HTTP request duration",
             ("method", "route"), buckets=LATENCY_BUCKETS, registry=self.registry,
+        )
+        self.scheduled_report_duration = Histogram(
+            "scheduled_report_duration_seconds", "Scheduled report duration",
+            buckets=LATENCY_BUCKETS, registry=self.registry,
         )
         self.application_info = Gauge(
             "application_info", "Application build information",
